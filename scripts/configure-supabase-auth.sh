@@ -28,7 +28,19 @@ SITE_URL="https://${SUBDOMAIN}"
 # Allowlist covers the callback route on both the custom domain and the
 # vercel.app alias (useful for preview/debug). Wildcards allowed per
 # Supabase docs.
-URI_ALLOW_LIST="${SITE_URL}/auth/callback,${SITE_URL}/**,https://*.vercel.app/auth/callback"
+export URI_ALLOW_LIST="${SITE_URL}/auth/callback,${SITE_URL}/**,https://*.vercel.app/auth/callback"
+export SITE_URL
+
+# Sanity-check the PAT format before we call the API. The Management API takes
+# a Supabase Personal Access Token (starts with `sbp_`), not a per-project
+# publishable/secret key. Surface the mistake with a clear message.
+if [[ "$SUPABASE_ACCESS_TOKEN" != sbp_* ]]; then
+  echo "ERROR: SUPABASE_ACCESS_TOKEN does not look like a Supabase PAT."
+  echo "Expected a token starting with 'sbp_' — the Management API does not"
+  echo "accept project publishable ('sb_publishable_') or secret ('sb_secret_')"
+  echo "keys. Generate one at https://supabase.com/dashboard/account/tokens"
+  exit 1
+fi
 
 echo "Project:           $PROJECT_REF"
 echo "Site URL:          $SITE_URL"
@@ -54,8 +66,6 @@ print(json.dumps({
     echo "$response"
     exit 1
   }
-
-export SITE_URL URI_ALLOW_LIST
 
 echo "Success. Response:"
 echo "$response" | python3 -m json.tool 2>/dev/null | head -20 || echo "$response"
