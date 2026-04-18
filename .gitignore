@@ -3,3 +3,7 @@
 
 # Claude Code local settings (machine-local, not committed)
 .claude/settings.local.json
+
+# Tenant secrets — never committed
+.env.production
+.env.local
