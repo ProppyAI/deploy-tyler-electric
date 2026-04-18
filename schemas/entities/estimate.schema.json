@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/estimate.schema.json",
+  "title": "Estimate",
+  "description": "A priced proposal for a job — contains line items, labor, markup, and totals",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "line_items": { "type": "array", "items": { "$ref": "https://schemas.harness.proppyai.com/entities/v1/line-item.schema.json" } },
+    "labor_items": { "type": "array", "items": { "$ref": "https://schemas.harness.proppyai.com/entities/v1/line-item.schema.json" } },
+    "subtotal": { "type": "number" },
+    "markup_percentage": { "type": "number" },
+    "markup_amount": { "type": "number" },
+    "tax_rate": { "type": "number" },
+    "tax_amount": { "type": "number" },
+    "total": { "type": "number" },
+    "status": { "type": "string", "enum": ["draft", "sent", "approved", "rejected", "expired"] },
+    "valid_until": { "type": "string", "format": "date" },
+    "notes": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "job_id", "status", "created_at"]
+}

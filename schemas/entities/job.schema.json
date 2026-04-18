@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/job.schema.json",
+  "title": "Job",
+  "description": "A unit of work for a client — the central entity that estimates, invoices, permits, and schedules attach to",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "client_id": { "type": "string", "format": "uuid" },
+    "address": {
+      "type": "object",
+      "properties": {
+        "street": { "type": "string" },
+        "city": { "type": "string" },
+        "state": { "type": "string" },
+        "zip": { "type": "string" }
+      },
+      "required": ["street", "city", "state", "zip"]
+    },
+    "type": { "type": "string" },
+    "description": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["draft", "estimated", "approved", "scheduled", "in-progress", "complete", "cancelled"]
+    },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "client_id", "status", "created_at"]
+}

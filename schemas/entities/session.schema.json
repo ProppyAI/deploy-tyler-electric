@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/session.schema.json",
+  "title": "Session",
+  "description": "An agent work session tracked by the HARNESS backbone",
+  "type": "object",
+  "properties": {
+    "session_id": { "type": "string" },
+    "org": { "type": "string" },
+    "repo": { "type": "string" },
+    "branch": { "type": "string" },
+    "pr": { "type": "string" },
+    "source": { "type": "string", "enum": ["local", "rc", "discord", "slack", "imessage", "telegram"] },
+    "intent": { "type": "string", "enum": ["trivial", "bug", "feature", "refactor", "question", "review", "scheduling", "billing-inquiry", "status-check", "complaint", "feature-request", "technical", "unknown"] },
+    "request": { "type": "string" },
+    "user": { "type": "string" },
+    "stage": { "type": "string", "enum": ["classifying", "debugging", "brainstorming", "planning", "executing", "reviewing", "security-review", "code-review", "auto-fix", "complete"] },
+    "status": { "type": "string", "enum": ["running", "complete", "waiting-for-input", "circuit-breaker", "needs-human", "stale", "failed"] },
+    "iteration": { "type": "integer" },
+    "max_iterations": { "type": "integer" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "pid": { "type": "integer" }
+  },
+  "required": ["session_id", "status", "started_at"]
+}

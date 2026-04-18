@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/vertical/v1/vertical.schema.json",
+  "title": "HARNESS Vertical Template",
+  "description": "Schema for vertical template files — defines a trade-specific module selection and configuration starting point",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "description": { "type": "string" },
+    "modules": {
+      "type": "object",
+      "properties": {
+        "required": { "type": "array", "items": { "type": "string" } },
+        "recommended": { "type": "array", "items": { "type": "string" } },
+        "optional": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["required"]
+    },
+    "entity_extensions": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "properties": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "config_defaults": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true
+      }
+    }
+  },
+  "required": ["name", "description", "modules"]
+}

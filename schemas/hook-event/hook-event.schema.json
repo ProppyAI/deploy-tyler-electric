@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/hook-event/v1/hook-event.schema.json",
+  "title": "Hook Event",
+  "description": "Event data passed to hook commands on stdin",
+  "type": "object",
+  "properties": {
+    "event": { "type": "string", "description": "Event name (PascalCase)" },
+    "type": { "type": "string", "enum": ["pre", "post"], "description": "pre hooks can block, post hooks are informational" },
+    "module": { "type": "string", "description": "Module that triggered the event" },
+    "entity": { "type": "string", "description": "Primary entity type involved" },
+    "entity_id": { "type": "string", "description": "ID of the entity instance" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "data": { "type": "object", "description": "Additional event-specific data" }
+  },
+  "required": ["event", "type", "module", "timestamp"]
+}

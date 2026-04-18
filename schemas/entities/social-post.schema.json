@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/social-post.schema.json",
+  "title": "Social Post",
+  "description": "A scheduled or published social media post",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "platform": { "type": "string", "enum": ["instagram", "facebook", "google-business", "tiktok"] },
+    "caption": { "type": "string" },
+    "content_asset_id": { "type": "string", "format": "uuid", "description": "FK to content-asset entity" },
+    "media_url": { "type": "string", "format": "uri", "pattern": "^https://", "description": "HTTPS URL to the content-asset media" },
+    "scheduled_at": { "type": "string", "format": "date-time" },
+    "published_at": { "type": "string", "format": "date-time" },
+    "status": { "type": "string", "enum": ["draft", "scheduled", "published", "failed"] },
+    "client_id": { "type": "string", "format": "uuid", "description": "FK to client entity" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "platform", "status", "created_at"]
+}

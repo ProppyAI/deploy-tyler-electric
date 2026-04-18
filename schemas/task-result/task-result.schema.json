@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/task-result/v1/task-result.schema.json",
+  "title": "Task Result",
+  "description": "Standard format for agent task results — used by orchestrator to synthesize parallel agent outputs",
+  "type": "object",
+  "properties": {
+    "agent": { "type": "string", "description": "Agent type that produced this result" },
+    "module": { "type": "string", "description": "Module the agent belongs to" },
+    "status": { "type": "string", "enum": ["complete", "failed", "partial"], "description": "Outcome of the task" },
+    "duration": { "type": "number", "description": "Seconds elapsed" },
+    "outputs": { "type": "object", "description": "Freeform module-specific data" },
+    "errors": { "type": "array", "items": { "type": "string" }, "description": "Error messages (empty on success)" },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string", "enum": ["file", "url", "json"] },
+          "path": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "required": ["type", "path"]
+      },
+      "description": "Files or resources created by the agent"
+    }
+  },
+  "required": ["agent", "module", "status"]
+}

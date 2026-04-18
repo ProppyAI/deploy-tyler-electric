@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/message/v1/message.schema.json",
+  "title": "Channel Message",
+  "description": "Normalized message format produced by all channel adapters",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid", "description": "Unique message identifier (uuid4)" },
+    "channel": { "type": "string", "enum": ["imessage", "telegram", "rc"], "description": "Source channel" },
+    "from": { "type": "string", "description": "Sender identifier (phone number, username, etc.)" },
+    "to": { "type": "string", "description": "Recipient/business identifier" },
+    "text": { "type": "string", "maxLength": 2000, "description": "Message content (truncated to 2000 chars)" },
+    "thread_id": { "type": ["string", "null"], "description": "Conversation thread ID (reserved for future threading)" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "metadata": { "type": "object", "description": "Channel-specific metadata" }
+  },
+  "required": ["id", "channel", "from", "text", "timestamp"]
+}

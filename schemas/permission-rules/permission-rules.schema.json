@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/permission-rules/v1/permission-rules.schema.json",
+  "title": "Permission Rules",
+  "description": "Permission configuration for a HARNESS deployment",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["supervised", "autonomous", "unrestricted"],
+      "default": "supervised",
+      "description": "Default permission behavior — supervised: declared=allow undeclared=deny, autonomous: declared=allow undeclared=ask, unrestricted: all allow"
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "module": { "type": "string", "description": "Module name or glob pattern" },
+          "access": { "type": "string", "description": "entity:read|write or glob pattern" },
+          "behavior": { "type": "string", "enum": ["allow", "deny", "ask"] }
+        },
+        "required": ["module", "access", "behavior"]
+      },
+      "description": "Ordered rules evaluated top-to-bottom, first match wins"
+    }
+  },
+  "required": ["mode"]
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/line-item.schema.json",
+  "title": "Line Item",
+  "description": "A single item in an estimate or invoice — material, labor, equipment, permit fee, or other",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "description": { "type": "string" },
+    "category": { "type": "string", "enum": ["material", "labor", "equipment", "permit", "other"] },
+    "quantity": { "type": "number" },
+    "unit": { "type": "string" },
+    "unit_cost": { "type": "number" },
+    "total": { "type": "number" },
+    "notes": { "type": "string" }
+  },
+  "required": ["id", "description", "quantity", "unit_cost", "total"]
+}

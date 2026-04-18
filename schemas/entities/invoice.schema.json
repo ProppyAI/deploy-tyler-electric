@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/invoice.schema.json",
+  "title": "Invoice",
+  "description": "A bill sent to a client for work performed on a job",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "estimate_id": { "type": "string", "format": "uuid" },
+    "line_items": { "type": "array", "items": { "$ref": "https://schemas.harness.proppyai.com/entities/v1/line-item.schema.json" } },
+    "subtotal": { "type": "number" },
+    "tax_amount": { "type": "number" },
+    "total": { "type": "number" },
+    "terms": { "type": "string", "enum": ["due-on-receipt", "net15", "net30", "net60"] },
+    "status": { "type": "string", "enum": ["draft", "sent", "paid", "overdue", "void"] },
+    "due_date": { "type": "string", "format": "date" },
+    "sent_at": { "type": "string", "format": "date-time" },
+    "paid_at": { "type": "string", "format": "date-time" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "job_id", "status", "created_at"]
+}

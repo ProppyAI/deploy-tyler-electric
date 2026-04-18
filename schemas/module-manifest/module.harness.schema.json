@@ -1,0 +1,183 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/module-manifest/v1/module.harness.schema.json",
+  "title": "HARNESS Module Manifest",
+  "description": "Schema for module.harness.json — the contract every HARNESS business module must satisfy",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Unique module identifier, lowercase with hyphens"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "Semantic version"
+    },
+    "description": {
+      "type": "string",
+      "description": "One-line description of what the module does"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["ops", "frontend", "backend", "data", "content", "social", "ml", "llm", "security", "analytics", "scientific", "comms"],
+      "description": "Module category — one of the 12 HARNESS module types"
+    },
+    "core": {
+      "type": "boolean",
+      "default": false,
+      "description": "If true, this is a HARNESS-internal module that ships with the backbone"
+    },
+    "entities": {
+      "type": "object",
+      "properties": {
+        "produces": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Entity types this module creates"
+        },
+        "consumes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Entity types this module reads"
+        },
+        "extends": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "properties": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          },
+          "description": "Additional properties to merge into base entity schemas"
+        }
+      },
+      "required": ["produces", "consumes"]
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "description": { "type": "string" },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9-]*:(read|write)$"
+            }
+          }
+        },
+        "required": ["name", "description", "permissions"]
+      }
+    },
+    "hooks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "event": { "type": "string" },
+          "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["pre", "post"],
+            "default": "post",
+            "description": "pre hooks can block the triggering action, post hooks are informational"
+          }
+        },
+        "required": ["event", "action"]
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Other module names that must be installed"
+    },
+    "externalServices": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "required": { "type": "boolean", "default": false }
+        },
+        "required": ["name"]
+      }
+    },
+    "config": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "default": {},
+          "enum": { "type": "array" },
+          "description": { "type": "string" }
+        },
+        "required": ["type", "default"]
+      },
+      "description": "Parameterized settings with types and defaults"
+    },
+    "agents": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Unique agent type identifier"
+          },
+          "description": {
+            "type": "string",
+            "description": "What this agent specializes in"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Operation tags for routing"
+          }
+        },
+        "required": ["name", "description", "capabilities"]
+      },
+      "description": "Agent types this module provides for parallel dispatch"
+    },
+    "cron": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Unique job identifier"
+          },
+          "schedule": {
+            "type": "string",
+            "description": "5-field cron expression"
+          },
+          "action": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Hook action to execute (resolves to hooks/<action> script)"
+          },
+          "description": {
+            "type": "string",
+            "description": "Human-readable purpose"
+          }
+        },
+        "required": ["name", "schedule", "action", "description"]
+      },
+      "description": "Scheduled tasks executed via the hook system"
+    }
+  },
+  "required": ["name", "version", "description", "category", "entities", "tools"]
+}

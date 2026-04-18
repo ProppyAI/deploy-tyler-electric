@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/permit.schema.json",
+  "title": "Permit",
+  "description": "A government permit for a job — tracks filing, approval, inspections, and expiry",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "jurisdiction": { "type": "string" },
+    "type": { "type": "string" },
+    "permit_number": { "type": "string" },
+    "status": { "type": "string", "enum": ["pending", "submitted", "approved", "rejected", "expired"] },
+    "filed_date": { "type": "string", "format": "date" },
+    "approved_date": { "type": "string", "format": "date" },
+    "expiry_date": { "type": "string", "format": "date" },
+    "inspection_dates": { "type": "array", "items": { "type": "string", "format": "date" } },
+    "notes": { "type": "string" }
+  },
+  "required": ["id", "job_id", "jurisdiction", "type", "status"]
+}

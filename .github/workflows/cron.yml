@@ -1,0 +1,19 @@
+name: Module Cron Jobs
+on:
+  schedule:
+    - cron: '0 * * * *'   # Hourly — due jobs are filtered by cron_manager
+  workflow_dispatch:
+    inputs:
+      job_name:
+        description: 'Run a specific job by name (optional)'
+        required: false
+        type: string
+        default: ''
+
+permissions: {}
+
+jobs:
+  cron:
+    uses: ProppyAI/HARNESS/.github/workflows/module-cron.yml@main
+    with:
+      job_name: ${{ inputs.job_name || '' }}

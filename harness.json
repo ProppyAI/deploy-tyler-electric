@@ -1,0 +1,79 @@
+{
+  "vertical": "electrical",
+  "client": "tyler-electric",
+  "deployment": {
+    "legal_name": "Tyler Electrical Contracting Inc",
+    "subdomain": "tylerelec.proppyai.io",
+    "supabase_project_ref": "ytautaibfstbehessxvp",
+    "supabase_region": "us-west-2",
+    "vercel_project": "tyler-electric",
+    "qbo_environment": "production",
+    "dashboard_users": ["tyler"]
+  },
+  "channels": {
+    "rc": { "enabled": false },
+    "discord": { "enabled": false },
+    "slack": { "enabled": false },
+    "imessage": { "enabled": false },
+    "telegram": {
+      "enabled": true,
+      "bot_token_env": "TELEGRAM_BOT_TOKEN",
+      "webhook_secret_env": "TELEGRAM_WEBHOOK_SECRET",
+      "allowed_user_ids_env": "TELEGRAM_ALLOWED_USER_IDS"
+    }
+  },
+  "model": "claude-sonnet-4-6",
+  "auto_pr": true,
+  "hybrid_threshold": 0.7,
+  "modules": {
+    "enabled": [
+      "estimator",
+      "invoicing",
+      "scheduling",
+      "crm",
+      "permit-tracker",
+      "nec-compliance"
+    ],
+    "config": {
+      "estimator": {
+        "markup_percentage": 25,
+        "labor_rate_journeyman": 85,
+        "labor_rate_apprentice": 45
+      },
+      "permit-tracker": {
+        "default_jurisdiction": "",
+        "auto_check_interval": "daily"
+      }
+    }
+  },
+  "permissions": {
+    "mode": "supervised",
+    "rules": []
+  },
+  "hooks": {
+    "timeout": 30,
+    "enabled": true
+  },
+  "integrations": {
+    "qbo": {
+      "type": "api",
+      "url": "https://quickbooks.api.intuit.com",
+      "required": true
+    },
+    "telegram": {
+      "type": "api",
+      "url": "https://api.telegram.org",
+      "required": true
+    },
+    "anthropic": {
+      "type": "api",
+      "url": "https://api.anthropic.com",
+      "required": true
+    },
+    "openai": {
+      "type": "api",
+      "url": "https://api.openai.com",
+      "required": false
+    }
+  }
+}

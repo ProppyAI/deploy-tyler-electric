@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/schedule-entry.schema.json",
+  "title": "Schedule Entry",
+  "description": "A crew assignment to a job on a specific date and time",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "crew_member_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+    "date": { "type": "string", "format": "date" },
+    "start_time": { "type": "string", "format": "time" },
+    "duration_hours": { "type": "number" },
+    "notes": { "type": "string" },
+    "status": { "type": "string", "enum": ["scheduled", "in-progress", "complete", "cancelled"] }
+  },
+  "required": ["id", "job_id", "crew_member_ids", "date", "duration_hours", "status"]
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/payment.schema.json",
+  "title": "Payment",
+  "description": "Money received against an invoice",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "invoice_id": { "type": "string", "format": "uuid" },
+    "amount": { "type": "number" },
+    "method": { "type": "string", "enum": ["check", "card", "ach", "cash", "other"] },
+    "reference": { "type": "string" },
+    "date": { "type": "string", "format": "date" },
+    "notes": { "type": "string" }
+  },
+  "required": ["id", "invoice_id", "amount", "method", "date"]
+}

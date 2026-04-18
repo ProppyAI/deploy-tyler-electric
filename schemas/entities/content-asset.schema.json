@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/content-asset.schema.json",
+  "title": "Content Asset",
+  "description": "A generated or rendered content artifact — image, video, voiceover, proposal, or document",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "enum": ["image", "video", "voiceover", "proposal", "invoice-doc", "3d-asset", "ad", "ugc"] },
+    "title": { "type": "string" },
+    "format": { "type": "string", "enum": ["png", "jpg", "mp4", "mp3", "pdf", "html", "webm", "glb"] },
+    "url": { "type": "string", "format": "uri", "pattern": "^https://", "description": "HTTPS URL to the stored asset" },
+    "prompt": { "type": "string", "description": "Generation prompt used (if AI-generated)" },
+    "model": { "type": "string", "description": "Generation model/tool used (e.g., nanobanana-2-pro, seedance-2.0, marketing-studio)" },
+    "source_platform": { "type": "string", "enum": ["higgsfield", "local"], "description": "Platform that generated this asset" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "client_id": { "type": "string", "format": "uuid" },
+    "status": { "type": "string", "enum": ["generating", "ready", "failed"], "description": "Async generation lifecycle status" },
+    "feedback": { "type": ["string", "null"], "enum": [null, "liked", "disliked", "edited"] },
+    "feedback_notes": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "type", "title", "format", "status", "created_at"]
+}

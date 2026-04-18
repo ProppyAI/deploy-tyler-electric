@@ -1,0 +1,5 @@
+# HARNESS session tracking (per-repo, never committed)
+.harness/
+
+# Claude Code local settings (machine-local, not committed)
+.claude/settings.local.json

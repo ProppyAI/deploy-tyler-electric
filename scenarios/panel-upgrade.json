@@ -1,0 +1,96 @@
+{
+  "name": "Residential Panel Upgrade",
+  "description": "Customer requests 200A panel upgrade — full lifecycle from inquiry to payment",
+  "steps": [
+    {
+      "step": 1,
+      "action": "channel.classify",
+      "input": { "text": "Hi, I need a quote for upgrading my electrical panel to 200 amps" },
+      "expect": { "intent": "question", "auto_dispatch": true }
+    },
+    {
+      "step": 2,
+      "action": "module.has_tool",
+      "module": "crm",
+      "tool": "create-client",
+      "expect": { "exists": true, "permissions_valid": true }
+    },
+    {
+      "step": 3,
+      "action": "module.has_tool",
+      "module": "estimator",
+      "tool": "create-estimate",
+      "expect": { "exists": true, "permissions_valid": true }
+    },
+    {
+      "step": 4,
+      "action": "hook.exists",
+      "module": "estimator",
+      "event": "EstimateApproved",
+      "expect": { "registered": true, "has_script": true }
+    },
+    {
+      "step": 5,
+      "action": "hook.fire",
+      "module": "estimator",
+      "event": "EstimateApproved",
+      "data": { "entity_id": "est-panel-001" },
+      "expect": { "outcome": "continue" }
+    },
+    {
+      "step": 6,
+      "action": "module.has_tool",
+      "module": "scheduling",
+      "tool": "create-schedule",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 7,
+      "action": "module.has_tool",
+      "module": "permit-tracker",
+      "tool": "file-permit",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 8,
+      "action": "module.has_tool",
+      "module": "nec-compliance",
+      "tool": "check-compliance",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 9,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "create-invoice",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 10,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "record-payment",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 11,
+      "action": "module.has_tool",
+      "module": "content-engine",
+      "tool": "generate-image",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 12,
+      "action": "module.has_tool",
+      "module": "content-engine",
+      "tool": "generate-ugc",
+      "description": "Generate UGC testimonial video from completed panel upgrade"
+    },
+    {
+      "step": 13,
+      "action": "channel.classify",
+      "input": { "text": "When is my electrician coming?" },
+      "expect": { "intent": "question", "auto_dispatch": true }
+    }
+  ]
+}

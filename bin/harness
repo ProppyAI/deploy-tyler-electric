@@ -1,0 +1,1357 @@
+#!/usr/bin/env bash
+# HARNESS CLI — per-repo agent session viewer
+# Usage: harness status [--watch] [--all]
+
+set -euo pipefail
+
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+HARNESS_DIR="${REPO_ROOT}/.harness"
+SESSIONS_DIR="$HARNESS_DIR/sessions"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Source session library for GC
+source "$SCRIPT_DIR/lib/session.sh"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+DIM='\033[2m'
+BOLD='\033[1m'
+RESET='\033[0m'
+
+# Sanitize a value for safe terminal display (strips non-printable chars)
+_sanitize() { local v; v=$(printf '%s' "$1" | tr -cd 'a-zA-Z0-9 _-'); printf '%s\n' "${v:-unknown}"; }
+
+status_color() {
+  case "$1" in
+    running)         echo -e "${GREEN}running${RESET}" ;;
+    complete)        echo -e "${DIM}complete${RESET}" ;;
+    circuit-breaker) echo -e "${RED}circuit-breaker${RESET}" ;;
+    waiting-for-input) echo -e "${YELLOW}waiting-for-input${RESET}" ;;
+    needs-human)     echo -e "${YELLOW}needs human${RESET}" ;;
+    stale)           echo -e "${DIM}stale${RESET}" ;;
+    failed)          echo -e "${RED}failed${RESET}" ;;
+    *)               _sanitize "$1" ;;
+  esac
+}
+
+stage_color() {
+  local safe
+  case "$1" in
+    classifying)     echo -e "${DIM}$1${RESET}" ;;
+    debugging)       echo -e "${RED}$1${RESET}" ;;
+    brainstorming)   echo -e "${MAGENTA}$1${RESET}" ;;
+    planning)        echo -e "${BLUE}$1${RESET}" ;;
+    executing)       echo -e "${GREEN}$1${RESET}" ;;
+    reviewing)       echo -e "${CYAN}$1${RESET}" ;;
+    security-review) echo -e "${RED}$1${RESET}" ;;
+    code-review)     echo -e "${BLUE}$1${RESET}" ;;
+    auto-fix)        echo -e "${YELLOW}$1${RESET}" ;;
+    daily-*)         safe=$(_sanitize "$1"); echo -e "${MAGENTA}${safe}${RESET}" ;;
+    test-*)          safe=$(_sanitize "$1"); echo -e "${CYAN}${safe}${RESET}" ;;
+    *)               _sanitize "$1" ;;
+  esac
+}
+
+time_ago() {
+  local then="$1"
+  local now
+  now=$(date +%s)
+  # Parse ISO timestamp to epoch
+  local epoch
+  epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$then" +%s 2>/dev/null || \
+          date -d "$then" +%s 2>/dev/null || echo "$now")
+  local diff=$((now - epoch))
+
+  if (( diff < 60 )); then
+    echo "${diff}s ago"
+  elif (( diff < 3600 )); then
+    echo "$((diff / 60))m ago"
+  elif (( diff < 86400 )); then
+    echo "$((diff / 3600))h ago"
+  else
+    echo "$((diff / 86400))d ago"
+  fi
+}
+
+cmd_status() {
+  local watch=false show_all=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --watch|-w) watch=true; shift ;;
+      --all|-a)   show_all=true; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if $watch; then
+    while true; do
+      clear
+      _render_status "$show_all"
+      sleep 2
+    done
+  else
+    _render_status "$show_all"
+  fi
+}
+
+_render_status() {
+  local show_all="$1"
+
+  # GC stale sessions first
+  harness_gc 2>/dev/null || true
+
+  local REPO_NAME
+  REPO_NAME=$(_sanitize "$(basename "$REPO_ROOT")")
+  echo -e "${BOLD}HARNESS — ${REPO_NAME} sessions${RESET}"
+  echo -e "${DIM}$(date -u +%Y-%m-%dT%H:%M:%SZ)${RESET}"
+  echo ""
+
+  if [[ ! -d "$SESSIONS_DIR" ]] || [[ -z "$(ls -A "$SESSIONS_DIR" 2>/dev/null)" ]]; then
+    echo -e "${DIM}No active sessions.${RESET}"
+    return
+  fi
+
+  # Header
+  printf "${BOLD}%-8s %-12s %-30s %-8s %-18s %-20s %s${RESET}\n" \
+    "SOURCE" "USER" "REQUEST" "PR" "STAGE" "STATUS" "UPDATED"
+  printf "%s\n" "$(printf '%.0s─' {1..100})"
+
+  local count=0
+  for f in "$SESSIONS_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+
+    local data
+    data=$(HARNESS_FILE="$f" python3 2>/dev/null <<'PYEOF'
+import json, os
+with open(os.environ['HARNESS_FILE']) as fh:
+    d = json.load(fh)
+print(d.get('source','local').replace('\n', ' '))
+print(d.get('user', d.get('org','?')).replace('\n', ' '))
+print(d.get('request','').replace('\n', ' ')[:28])
+print(d.get('pr') or '-')
+print(d.get('stage','?'))
+print(d.get('status','?'))
+print(d.get('updated_at','?'))
+print(d.get('error') or '')
+PYEOF
+    ) || continue
+
+    local session_source user request pr stage status updated error
+    IFS=$'\n' read -r session_source <<< "$(echo "$data" | sed -n '1p')"
+    IFS=$'\n' read -r user <<< "$(echo "$data" | sed -n '2p')"
+    IFS=$'\n' read -r request <<< "$(echo "$data" | sed -n '3p')"
+    IFS=$'\n' read -r pr <<< "$(echo "$data" | sed -n '4p')"
+    IFS=$'\n' read -r stage <<< "$(echo "$data" | sed -n '5p')"
+    IFS=$'\n' read -r status <<< "$(echo "$data" | sed -n '6p')"
+    IFS=$'\n' read -r updated <<< "$(echo "$data" | sed -n '7p')"
+    IFS=$'\n' read -r error <<< "$(echo "$data" | sed -n '8p')"
+
+    # Filter
+    [[ "$show_all" != "true" && "$status" == "complete" ]] && continue
+    [[ "$show_all" != "true" && "$status" == "stale" ]] && continue
+
+    local pr_display
+    pr_display=$(printf '%s' "$pr" | tr -cd '[:print:]')
+    [[ "$pr_display" != "-" ]] && pr_display="#$pr_display"
+    local updated_display
+    updated_display=$(time_ago "$updated")
+
+    # Print plain columns first, then colored columns with manual padding
+    # (ANSI escape bytes break printf %-Ns width calculation)
+    # Sanitize display fields (session JSON may contain control chars)
+    # source uses _sanitize (strict alphanumeric — known enum values only)
+    # user/request use [:print:] (broader — names have dots, requests have punctuation)
+    local safe_source safe_user safe_request
+    safe_source=$(_sanitize "$session_source")
+    safe_user=$(printf '%s' "$user" | tr -cd '[:print:]')
+    safe_request=$(printf '%s' "$request" | tr -cd '[:print:]')
+    printf "%-8s %-12s %-30s %-8s " "$safe_source" "$safe_user" "$safe_request" "$pr_display"
+    local colored_stage colored_status
+    colored_stage=$(stage_color "$stage")
+    colored_status=$(status_color "$status")
+    local stage_pad=$((18 - ${#stage}))
+    local status_pad=$((20 - ${#status}))
+    # Clamp padding to 0 minimum (long values don't go negative)
+    (( stage_pad < 0 )) && stage_pad=0
+    (( status_pad < 0 )) && status_pad=0
+    # Use %s not %b — color functions already output real ESC bytes
+    printf "%s%*s%s%*s%s\n" \
+      "$colored_stage" "$stage_pad" "" \
+      "$colored_status" "$status_pad" "" \
+      "$updated_display"
+
+    if [[ -n "$error" ]]; then
+      local safe_error
+      safe_error=$(printf '%s' "$error" | tr -cd '[:print:]')
+      printf '  \033[0;31m└─ %s\033[0m\n' "$safe_error"
+    fi
+
+    count=$((count + 1))
+  done
+
+  echo ""
+  echo -e "${DIM}$count session(s) shown. Use --all to include completed/stale.${RESET}"
+}
+
+cmd_clean() {
+  local cutoff="${1:-24}"  # hours
+  if ! [[ "$cutoff" =~ ^[1-9][0-9]*$ ]]; then
+    echo "Error: hours must be a positive integer (>= 1)"
+    exit 1
+  fi
+  echo "Cleaning sessions older than ${cutoff}h..."
+  local count=0
+  for f in "$SESSIONS_DIR"/*.json; do
+    [[ -f "$f" ]] || continue
+    local status ended
+    status=$(HARNESS_FILE="$f" python3 -c "import json,os; print(json.load(open(os.environ['HARNESS_FILE']))['status'])" 2>/dev/null || echo "unknown")
+    ended=$(HARNESS_FILE="$f" python3 -c "import json,os; print(json.load(open(os.environ['HARNESS_FILE'])).get('ended_at') or '')" 2>/dev/null || echo "")
+
+    if [[ "$status" != "running" && -n "$ended" ]]; then
+      local ended_epoch now_epoch
+      ended_epoch=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ended" +%s 2>/dev/null || date -d "$ended" +%s 2>/dev/null || echo ""
+      )
+      # Skip sessions with unparseable timestamps (don't accidentally delete them)
+      [[ -z "$ended_epoch" ]] && continue
+      now_epoch=$(date +%s)
+      if (( now_epoch - ended_epoch > cutoff * 3600 )); then
+        rm "$f"
+        count=$((count + 1))
+      fi
+    fi
+  done
+  echo "Removed $count session(s)."
+}
+
+cmd_module() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    validate)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness module validate <path-to-module>"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/validate_module.py" "$1" "$SCRIPT_DIR"
+      ;;
+    list)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness module list <path-to-deployment>"
+        exit 1
+      fi
+      local deploy_path="$1"
+      local config="$deploy_path/harness.json"
+      if [[ ! -f "$config" ]]; then
+        echo "ERROR: harness.json not found in $deploy_path"
+        exit 1
+      fi
+      echo "HARNESS — Module list"
+      echo ""
+      python3 - "$config" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    cfg = json.load(f)
+modules = cfg.get('modules', {}).get('enabled', [])
+if not modules:
+    print('  No modules configured.')
+else:
+    for m in modules:
+        print(f'  {m}')
+PYEOF
+      ;;
+    deps)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness module deps [--format dot] <path1> [path2] ..."
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/module_deps.py" "$@"
+      ;;
+    fetch)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness module fetch <module-name> [--org org]"
+        exit 1
+      fi
+      local cache_dir
+      cache_dir="$(pwd)/.harness/modules"
+      mkdir -p "$cache_dir"
+      python3 "$SCRIPT_DIR/lib/module_fetch.py" fetch "$1" "$cache_dir" "${@:2}"
+      ;;
+    fetch-all)
+      local deploy_path="${1:-.}"
+      shift 2>/dev/null || true
+      local cache_dir
+      cache_dir="$(cd "$deploy_path" && pwd)/.harness/modules"
+      mkdir -p "$cache_dir"
+      python3 "$SCRIPT_DIR/lib/module_fetch.py" fetch-all "$deploy_path" "$cache_dir" "$@"
+      ;;
+    scaffold)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness module scaffold <name> [target-path] [--category cat] [--produces e1,e2] [--consumes e1] [--create-repo] [--org org]"
+        exit 1
+      fi
+      local mod_name="$1"
+      local mod_path="./module-$mod_name"
+      if [[ $# -ge 2 && "${2}" != --* ]]; then
+        mod_path="$2"
+        shift 2
+      else
+        shift 1
+      fi
+      python3 "$SCRIPT_DIR/lib/module_scaffold.py" "$mod_name" "$mod_path" "$@"
+      ;;
+    help|*)
+      cat <<MODEOF
+Usage:
+  harness module validate <path>     Validate a module manifest
+  harness module list <deploy-path>  List modules in a deployment
+  harness module deps [paths...]     Show module dependency graph
+  harness module fetch <name>          Fetch a module from GitHub
+  harness module fetch-all [path]      Fetch all enabled modules for a deployment
+  harness module scaffold <name>   Scaffold a new module repo
+  harness module help                Show this message
+MODEOF
+      ;;
+  esac
+}
+
+cmd_vertical() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    scaffold)
+      if [[ $# -lt 2 ]]; then
+        echo "Usage: harness vertical scaffold <vertical-name> <target-path>"
+        exit 1
+      fi
+      local vertical_name="$1"
+      if [[ ! "$vertical_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "ERROR: Invalid vertical name '${vertical_name}' — must be alphanumeric, hyphens, or underscores only"
+        exit 1
+      fi
+      local target_path="$2"
+      local vertical_file="$SCRIPT_DIR/verticals/${vertical_name}.json"
+
+      if [[ ! -f "$vertical_file" ]]; then
+        echo "ERROR: Vertical template '${vertical_name}' not found at $vertical_file"
+        echo "Available verticals:"
+        for f in "$SCRIPT_DIR"/verticals/*.json; do
+          [[ -f "$f" ]] && echo "  $(basename "$f" .json)"
+        done
+        exit 1
+      fi
+
+      if [[ -d "$target_path" ]] && [[ -n "$(ls -A "$target_path" 2>/dev/null)" ]]; then
+        echo "ERROR: Target path '$target_path' already exists and is not empty"
+        exit 1
+      fi
+
+      mkdir -p "$target_path"
+
+      # Generate harness.json from vertical template
+      python3 -c "
+import json, sys
+
+with open(sys.argv[1]) as f:
+    vertical = json.load(f)
+
+# Assemble module list (required + recommended)
+enabled = vertical.get('modules', {}).get('required', []) + vertical.get('modules', {}).get('recommended', [])
+
+# Merge config defaults
+config = {}
+for module_name, defaults in vertical.get('config_defaults', {}).items():
+    config[module_name] = defaults
+
+deployment = {
+    'vertical': vertical['name'],
+    'client': '',
+    'modules': {
+        'enabled': enabled,
+        'config': config
+    },
+    'permissions': {
+        'mode': 'supervised',
+        'rules': []
+    },
+    'hooks': {
+        'timeout': 30,
+        'enabled': True
+    },
+    'integrations': {},
+    'entity_extensions': vertical.get('entity_extensions', {})
+}
+
+output_path = sys.argv[2] + '/harness.json'
+with open(output_path, 'w') as f:
+    json.dump(deployment, f, indent=2)
+    f.write('\n')
+
+print(f'Created: harness.json ({len(enabled)} modules)')
+" "$vertical_file" "$target_path"
+
+      # Generate README
+      cat > "$target_path/README.md" <<READMEEOF
+# Deployment — ${vertical_name}
+
+Generated by \`harness vertical scaffold ${vertical_name}\`.
+
+## Next Steps
+
+1. Review \`harness.json\` — adjust modules and config for this client
+2. Add client-specific overrides as needed
+3. Run: \`harness module deps .\` to verify the dependency graph
+READMEEOF
+      echo "Created: README.md"
+
+      # Init git
+      (cd "$target_path" && git init -q && git add -A && git commit -q -m "Initial scaffold from ${vertical_name} vertical")
+      echo "Initialized: git repo"
+
+      echo ""
+      echo "Deployment scaffolded at: $target_path"
+      ;;
+    list)
+      echo "HARNESS — Available verticals"
+      echo ""
+      for f in "$SCRIPT_DIR"/verticals/*.json; do
+        [[ -f "$f" ]] || continue
+        local vname
+        vname=$(basename "$f" .json)
+        local vdesc
+        vdesc=$(HARNESS_FILE="$f" python3 -c "import json,os; print(json.load(open(os.environ['HARNESS_FILE'])).get('description',''))" 2>/dev/null || echo "")
+        echo "  $vname — $vdesc"
+      done
+      ;;
+    help|*)
+      cat <<VERTEOF
+Usage:
+  harness vertical scaffold <name> <path>  Scaffold a deployment from a vertical template
+  harness vertical list                    List available verticals
+  harness vertical help                    Show this message
+VERTEOF
+      ;;
+  esac
+}
+
+cmd_hook() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)
+      if [[ $# -gt 0 ]]; then
+        python3 "$SCRIPT_DIR/lib/hook_registry.py" "$SCRIPT_DIR" "$@"
+      else
+        python3 "$SCRIPT_DIR/lib/hook_registry.py" "$SCRIPT_DIR"
+      fi
+      ;;
+    fire)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness hook fire <event-name> [--data '{}'] [--module-path path ...]"
+        exit 1
+      fi
+      local event_name="$1"
+      shift
+      # Auto-load harness.json if present and --config not already specified
+      local config_args=()
+      local has_config=false
+      for arg in "$@"; do
+        [[ "$arg" == "--config" ]] && has_config=true && break
+      done
+      if [[ -f "$(pwd)/harness.json" ]] && [[ "$has_config" == false ]]; then
+        config_args=(--config "$(pwd)/harness.json")
+      fi
+      python3 "$SCRIPT_DIR/lib/hook_executor.py" "$event_name" "$SCRIPT_DIR" "${config_args[@]+"${config_args[@]}"}" "$@"
+      ;;
+    help|*)
+      cat <<HOOKEOF
+Usage:
+  harness hook list [module-paths...]     List registered hooks
+  harness hook fire <event> [options]     Fire an event
+    --data '{"key":"val"}'                  Event data JSON
+    --module-path <path>                    Module path (repeatable)
+    --config <path>                         Config file path
+  harness hook help                       Show this message
+HOOKEOF
+      ;;
+  esac
+}
+
+cmd_permission() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    check)
+      if [[ $# -lt 2 ]]; then
+        echo "Usage: harness permission check <module-name-or-path> <entity:access> [--config path]"
+        echo ""
+        echo "Accepts a module name (searches lib/ and examples/modules/) or a path to a module directory."
+        exit 1
+      fi
+      local mod_name="$1"
+      local access="$2"
+      shift 2
+
+      # Find the manifest — accept a direct path or a module name
+      local manifest_path=""
+      if [[ "$mod_name" == *..* || "$mod_name" == /* ]]; then
+        echo "ERROR: Module path must be relative and must not contain '..'"
+        exit 1
+      fi
+      if [[ -f "$mod_name/module.harness.json" ]]; then
+        manifest_path="$mod_name/module.harness.json"
+        # Resolve to the module's declared name for correct permission rule matching
+        local resolved_name
+        resolved_name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('name',''))" "$manifest_path" 2>/dev/null)
+        if [[ -z "$resolved_name" ]]; then
+          echo "ERROR: Could not read module name from $manifest_path"
+          exit 1
+        fi
+        mod_name="$resolved_name"
+      else
+        for search_dir in "$SCRIPT_DIR/lib" "$SCRIPT_DIR/examples/modules"; do
+          for d in "$search_dir"/*/; do
+            local mf="$d/module.harness.json"
+            if [[ -f "$mf" ]]; then
+              local found_name
+              found_name=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('name',''))" "$mf" 2>/dev/null)
+              if [[ "$found_name" == "$mod_name" ]]; then
+                manifest_path="$mf"
+                break 2
+              fi
+            fi
+          done
+        done
+      fi
+
+      if [[ -z "$manifest_path" ]]; then
+        echo "ERROR: Module '$mod_name' not found."
+        echo "Provide a module name (searches lib/ and examples/modules/) or a path to a module directory."
+        exit 1
+      fi
+
+      python3 "$SCRIPT_DIR/lib/permission_checker.py" check "$mod_name" "$access" "$manifest_path" "$SCRIPT_DIR" "$@"
+      ;;
+    audit)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness permission audit <module-path> [--config path]"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/permission_checker.py" audit "${1}" "$SCRIPT_DIR" "${@:2}"
+      ;;
+    help|*)
+      cat <<PERMEOF
+Usage:
+  harness permission check <name-or-path> <entity:access>  Check a single permission
+    --config <path>                                      Config file with rules
+  harness permission audit <module-path>               Audit all module permissions
+    --config <path>                                      Config file with rules
+  harness permission help                              Show this message
+PERMEOF
+      ;;
+  esac
+}
+
+cmd_config() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    resolve)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness config resolve <deployment-path>"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/config_resolver.py" "$1" "$SCRIPT_DIR"
+      ;;
+    validate)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness config validate <deployment-path>"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/config_validator.py" "$1" "$SCRIPT_DIR"
+      ;;
+    help|*)
+      cat <<CFGEOF
+Usage:
+  harness config resolve <deployment-path>    Show resolved config with layer attribution
+  harness config validate <deployment-path>   Validate deployment config
+  harness config help                         Show this message
+CFGEOF
+      ;;
+  esac
+}
+
+cmd_deploy() {
+  if [[ $# -lt 2 ]]; then
+    cat <<DEPLOYEOF
+Usage: harness deploy <vertical-name> <target-path> [--client <name>]
+
+Creates a full deployment:
+  1. Scaffolds harness.json from vertical template
+  2. Bootstraps repo with harness-init (workflows, CLI, schemas)
+  3. Fetches modules from GitHub
+  4. Resolves config (merges vertical defaults with deployment)
+  5. Validates config (checks modules, integrations, permissions)
+DEPLOYEOF
+    exit 1
+  fi
+
+  local vertical_name="$1"
+  if [[ ! "$vertical_name" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "ERROR: Invalid vertical name '${vertical_name}' — must be alphanumeric, hyphens, or underscores only"
+    exit 1
+  fi
+  local target_path="$2"
+  shift 2
+
+  # Parse --client flag
+  local client_name=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --client)
+        if [[ $# -lt 2 || "$2" == --* ]]; then
+          echo "ERROR: --client requires a value"
+          exit 1
+        fi
+        client_name="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+
+  # Default client name from target directory
+  if [[ -z "$client_name" ]]; then
+    client_name=$(basename "$target_path")
+  fi
+
+  local vertical_file="$SCRIPT_DIR/verticals/${vertical_name}.json"
+  if [[ ! -f "$vertical_file" ]]; then
+    echo "ERROR: Vertical template '${vertical_name}' not found"
+    echo "Available verticals:"
+    for f in "$SCRIPT_DIR"/verticals/*.json; do
+      [[ -f "$f" ]] && echo "  $(basename "$f" .json)"
+    done
+    exit 1
+  fi
+
+  echo "HARNESS — Deploying \"${vertical_name}\" for ${client_name}"
+  echo ""
+
+  # Step 1: Scaffold
+  echo "  1. Scaffolding..."
+  cmd_vertical scaffold "$vertical_name" "$target_path" 2>&1 | sed 's/^/     /'
+
+  # Step 2: Add client and vertical fields to generated harness.json
+  local deploy_config="$target_path/harness.json"
+  python3 - "$deploy_config" "$client_name" "$vertical_name" <<'PYEOF'
+import json, sys
+config_path, client, vertical = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(config_path) as f:
+    config = json.load(f)
+config["client"] = client
+config["vertical"] = vertical
+config.setdefault("permissions", {"mode": "supervised", "rules": []})
+config.setdefault("hooks", {"timeout": 30, "enabled": True})
+config.setdefault("integrations", {})
+with open(config_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PYEOF
+
+  # Step 3: Bootstrap with harness-init
+  echo "  2. Bootstrapping repo..."
+  (cd "$target_path" && HARNESS_LOCAL="$SCRIPT_DIR" bash "$SCRIPT_DIR/bin/harness-init" 2>&1 | sed 's/^/     /')
+
+  # Step 3: Fetch modules from GitHub
+  echo "  3. Fetching modules..."
+  local module_cache="$target_path/.harness/modules"
+  mkdir -p "$module_cache"
+  python3 "$SCRIPT_DIR/lib/module_fetch.py" fetch-all "$target_path" "$module_cache" 2>&1 | sed 's/^/     /' || echo "     WARNING: some modules failed to fetch — deploy continues"
+
+  # Step 4: Resolve config
+  echo "  4. Resolving config..."
+  python3 "$SCRIPT_DIR/lib/config_resolver.py" "$target_path" "$SCRIPT_DIR" 2>&1 | sed 's/^/     /'
+
+  # Step 5: Validate
+  echo "  5. Validating..."
+  python3 "$SCRIPT_DIR/lib/config_validator.py" "$target_path" "$SCRIPT_DIR" 2>&1 | sed 's/^/     /'
+
+  # Step 6: Commit all post-scaffold changes (config enrichment + harness-init files)
+  if [[ -d "$target_path/.git" ]]; then
+    (
+      cd "$target_path"
+      git add -A
+      if ! git diff --cached --quiet 2>/dev/null; then
+        git commit -q -m "Configure ${vertical_name} deployment for ${client_name}"
+      fi
+    )
+  fi
+
+  echo ""
+  echo "  Deployment ready at: $target_path"
+}
+
+cmd_agent() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)
+      local json_flag=""
+      local module_args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json_flag="--json"; shift ;;
+          *) module_args+=("$1"); shift ;;
+        esac
+      done
+      if [[ ${#module_args[@]} -gt 0 ]]; then
+        python3 "$SCRIPT_DIR/lib/agent_registry.py" "$SCRIPT_DIR" ${json_flag:+"$json_flag"} "${module_args[@]}"
+      else
+        python3 "$SCRIPT_DIR/lib/agent_registry.py" "$SCRIPT_DIR" ${json_flag:+"$json_flag"}
+      fi
+      ;;
+    help|*)
+      cat <<AGENTEOF
+Usage:
+  harness agent list [--json] [module-paths...]   List registered agent types
+  harness agent help                              Show this message
+AGENTEOF
+      ;;
+  esac
+}
+
+cmd_cron() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)
+      local json_flag=""
+      local module_args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --json) json_flag="--json"; shift ;;
+          *) module_args+=("$1"); shift ;;
+        esac
+      done
+      if [[ ${#module_args[@]} -gt 0 ]]; then
+        python3 "$SCRIPT_DIR/lib/cron_manager.py" list "$SCRIPT_DIR" ${json_flag:+"$json_flag"} "${module_args[@]}"
+      else
+        python3 "$SCRIPT_DIR/lib/cron_manager.py" list "$SCRIPT_DIR" ${json_flag:+"$json_flag"}
+      fi
+      ;;
+    run)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness cron run <job-name> [--module-path path ...] [--config path]"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/cron_manager.py" run "$1" "$SCRIPT_DIR" "${@:2}"
+      ;;
+    help|*)
+      cat <<CRONEOF
+Usage:
+  harness cron list [--json] [module-paths...]   List declared cron jobs
+  harness cron run <job-name> [options]          Run a cron job
+    --module-path <path>                           Module path (repeatable)
+    --config <path>                                Config file path
+  harness cron help                              Show this message
+CRONEOF
+      ;;
+  esac
+}
+
+cmd_channel() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)
+      python3 "$SCRIPT_DIR/lib/adapter_registry.py" list "$SCRIPT_DIR"
+      ;;
+    poll)
+      python3 "$SCRIPT_DIR/lib/adapter_registry.py" poll "$SCRIPT_DIR"
+      ;;
+    classify)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness channel classify \"message text\""
+        exit 1
+      fi
+      echo "HARNESS — Classification"
+      echo ""
+      # Sanitize user text before echoing to terminal (strip control chars)
+      sanitized="$(printf '%s' "$1" | tr -d '\000-\037\177')"
+      echo "  Text:    \"$sanitized\""
+      echo "  (Classification requires Claude — use /harness-orchestrate for the full pipeline)"
+      ;;
+    help|*)
+      cat <<CHANEOF
+Usage:
+  harness channel list                    Show enabled channels
+  harness channel poll                    Poll channels and queue to inbox (pending classification)
+  harness channel classify "text"         Preview message text (classification via /harness-orchestrate)
+  harness channel help                    Show this message
+CHANEOF
+      ;;
+  esac
+}
+
+cmd_inbox() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  local inbox_dir
+  inbox_dir="$(pwd)/.harness/inbox"
+
+  case "$subcmd" in
+    list)
+      mkdir -p "$inbox_dir"
+      python3 "$SCRIPT_DIR/lib/inbox_manager.py" list "$inbox_dir" "$@"
+      ;;
+    reply)
+      if [[ $# -lt 2 ]]; then
+        echo "Usage: harness inbox reply <msg-id> \"response text\""
+        exit 1
+      fi
+      HARNESS_REPLY_TEXT="$2" python3 "$SCRIPT_DIR/lib/inbox_manager.py" reply "$1" "$inbox_dir" "$SCRIPT_DIR"
+      ;;
+    dispatch)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness inbox dispatch <msg-id>"
+        exit 1
+      fi
+      # Sanitize msg_id before echoing to terminal
+      sanitized_id="$(printf '%s' "$1" | tr -d '\000-\037\177')"
+      echo "HARNESS — Dispatch: $sanitized_id"
+      echo "  (Not yet implemented — use /harness-orchestrate to classify and dispatch inbox messages)"
+      ;;
+    cleanup)
+      python3 "$SCRIPT_DIR/lib/inbox_manager.py" cleanup "$inbox_dir" "$@"
+      ;;
+    help|*)
+      cat <<INBOXEOF
+Usage:
+  harness inbox list [--all] [--full]    Show inbox messages (--full for unmasked phone numbers)
+  harness inbox reply <id> "response"    Reply to a message directly
+  harness inbox dispatch <id>            Dispatch to Claude orchestrator
+  harness inbox cleanup [days]           Remove messages older than N days (default: 90)
+  harness inbox help                     Show this message
+INBOXEOF
+      ;;
+  esac
+}
+
+cmd_update() {
+  local force=false dry_run=false
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force)   force=true; shift ;;
+      --dry-run) dry_run=true; shift ;;
+      *) echo "Unknown flag: $1"; exit 1 ;;
+    esac
+  done
+
+  # Require .harness-version in the consuming repo
+  local local_version_file="$REPO_ROOT/.harness-version"
+  if [[ ! -f "$local_version_file" ]]; then
+    echo -e "${RED}ERROR: .harness-version not found in $REPO_ROOT${RESET}"
+    echo "This repo has not been bootstrapped with harness-init."
+    exit 1
+  fi
+
+  local local_version
+  local_version=$(tr -d '[:space:]' < "$local_version_file")
+
+  # Determine fetch mode: local if HARNESS repo is on disk, remote otherwise
+  local fetch_mode="remote"
+  local harness_local="${HARNESS_LOCAL:-}"
+  # Local mode only via explicit HARNESS_LOCAL env var — auto-detection removed because
+  # all backbone files (including potential sentinels) get copied to consuming repos
+  if [[ -z "$harness_local" ]] && [[ -f "$SCRIPT_DIR/.harness-source" ]]; then
+    harness_local="$SCRIPT_DIR"
+  fi
+  if [[ -n "$harness_local" ]] && [[ -d "$harness_local" ]]; then
+    fetch_mode="local"
+  fi
+
+  echo -e "${BOLD}HARNESS — Update${RESET}"
+  echo -e "${DIM}Mode: ${fetch_mode}${RESET}"
+  echo ""
+
+  # Fetch remote version
+  local remote_version=""
+  if [[ "$fetch_mode" == "local" ]]; then
+    if [[ -f "$harness_local/.harness-version" ]]; then
+      remote_version=$(tr -d '[:space:]' < "$harness_local/.harness-version")
+    else
+      echo -e "${RED}ERROR: .harness-version not found in HARNESS repo ($harness_local)${RESET}"
+      exit 1
+    fi
+  else
+    local raw_base="https://raw.githubusercontent.com/ProppyAI/HARNESS/main"
+    remote_version=$(curl -fsSL "$raw_base/.harness-version" 2>/dev/null | tr -d '[:space:]') || {
+      echo -e "${RED}ERROR: Failed to fetch remote .harness-version${RESET}"
+      exit 1
+    }
+  fi
+
+  # Compare versions
+  if [[ "$local_version" == "$remote_version" ]] && [[ "$force" == false ]]; then
+    echo -e "${GREEN}Up to date${RESET} (${DIM}${local_version}${RESET})"
+    return 0
+  fi
+
+  if [[ "$local_version" != "$remote_version" ]]; then
+    echo -e "  Local:  ${DIM}${local_version}${RESET}"
+    echo -e "  Remote: ${BOLD}${remote_version}${RESET}"
+  else
+    echo -e "  Version: ${DIM}${local_version}${RESET} ${YELLOW}(--force)${RESET}"
+  fi
+  echo ""
+
+  # Fetch backbone-manifest.json
+  local manifest_json=""
+  if [[ "$fetch_mode" == "local" ]]; then
+    if [[ ! -f "$harness_local/backbone-manifest.json" ]]; then
+      echo -e "${RED}ERROR: backbone-manifest.json not found in $harness_local${RESET}"
+      exit 1
+    fi
+    manifest_json=$(cat "$harness_local/backbone-manifest.json")
+  else
+    manifest_json=$(curl -fsSL "$raw_base/backbone-manifest.json" 2>/dev/null) || {
+      echo -e "${RED}ERROR: Failed to fetch backbone-manifest.json${RESET}"
+      exit 1
+    }
+  fi
+
+  # Process files from manifest
+  local updated=0 created=0 unchanged=0
+  local changed_files=()
+
+  local file_count
+  file_count=$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('files',[])))")
+
+  local i=0
+  while (( i < file_count )); do
+    local src dst executable
+    IFS=$'\t' read -r src dst executable < <(printf '%s' "$manifest_json" | HARNESS_IDX="$i" python3 -c "
+import json, sys, os
+idx = int(os.environ['HARNESS_IDX'])
+m = json.load(sys.stdin)
+f = m['files'][idx]
+exe = '1' if f.get('executable', False) else '0'
+print(f\"{f['src']}\t{f['dst']}\t{exe}\")
+")
+    executable=$([[ "$executable" == "1" ]] && echo "true" || echo "false")
+
+    local src_content=""
+    if [[ "$fetch_mode" == "local" ]]; then
+      # Source containment guard — reject src paths that escape harness_local
+      local src_real
+      src_real=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$harness_local/$src")
+      if [[ "$src_real" != "$harness_local"/* ]]; then
+        echo -e "  ${RED}BLOCK${RESET} $src (source path traversal rejected)"
+        i=$((i + 1))
+        continue
+      fi
+      if [[ -f "$harness_local/$src" ]]; then
+        src_content=$(cat "$harness_local/$src")
+      else
+        echo -e "  ${YELLOW}SKIP${RESET} $dst (source missing)"
+        i=$((i + 1))
+        continue
+      fi
+    else
+      src_content=$(curl -fsSL "$raw_base/$src" 2>/dev/null) || {
+        echo -e "  ${YELLOW}SKIP${RESET} $dst (fetch failed)"
+        i=$((i + 1))
+        continue
+      }
+    fi
+
+    local dst_path="$REPO_ROOT/$dst"
+
+    # Path traversal guard — reject dst paths that escape REPO_ROOT
+    local dst_real
+    dst_real=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$dst_path")
+    if [[ "$dst_real" != "$REPO_ROOT"/* ]]; then
+      echo -e "  ${RED}BLOCK${RESET} $dst (path traversal rejected)"
+      i=$((i + 1))
+      continue
+    fi
+
+    local status_label=""
+
+    if [[ ! -f "$dst_path" ]]; then
+      status_label="NEW"
+      created=$((created + 1))
+      changed_files+=("$dst")
+    elif ! diff -q <(printf '%s\n' "$src_content") "$dst_path" >/dev/null 2>&1; then
+      status_label="UPD"
+      updated=$((updated + 1))
+      changed_files+=("$dst")
+    else
+      unchanged=$((unchanged + 1))
+      i=$((i + 1))
+      continue
+    fi
+
+    if [[ "$dry_run" == true ]]; then
+      if [[ "$status_label" == "NEW" ]]; then
+        echo -e "  ${GREEN}NEW${RESET} $dst"
+      else
+        echo -e "  ${CYAN}UPD${RESET} $dst"
+      fi
+    else
+      mkdir -p "$(dirname "$dst_path")"
+      local tmp_file
+      tmp_file=$(mktemp "${dst_path}.tmp.XXXXXX")
+      printf '%s\n' "$src_content" > "$tmp_file"
+      mv "$tmp_file" "$dst_path"
+      if [[ "$executable" == "true" ]]; then
+        chmod +x "$dst_path"
+      fi
+      if [[ "$status_label" == "NEW" ]]; then
+        echo -e "  ${GREEN}NEW${RESET} $dst"
+      else
+        echo -e "  ${CYAN}UPD${RESET} $dst"
+      fi
+    fi
+
+    i=$((i + 1))
+  done
+
+  # Handle directories
+  local dir_count
+  dir_count=$(printf '%s' "$manifest_json" | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('directories',[])))")
+
+  local d=0
+  while (( d < dir_count )); do
+    local dir_src dir_dst
+    IFS=$'\t' read -r dir_src dir_dst < <(printf '%s' "$manifest_json" | HARNESS_IDX="$d" python3 -c "
+import json, sys, os
+idx = int(os.environ['HARNESS_IDX'])
+m = json.load(sys.stdin)
+dr = m['directories'][idx]
+print(f\"{dr['src']}\t{dr['dst']}\")
+")
+
+    # Path traversal guard for directory entries
+    local dir_dst_real
+    dir_dst_real=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$REPO_ROOT/$dir_dst")
+    if [[ "$dir_dst_real" != "$REPO_ROOT"/* ]]; then
+      echo -e "  ${RED}BLOCK${RESET} $dir_dst (directory path traversal rejected)"
+      d=$((d + 1))
+      continue
+    fi
+
+    if [[ "$fetch_mode" == "local" ]]; then
+      local source_dir="$harness_local/$dir_src"
+      local target_dir="$REPO_ROOT/$dir_dst"
+
+      # Source containment guard for directory entries
+      local dir_src_real
+      dir_src_real=$(python3 -c "import os,sys; print(os.path.realpath(sys.argv[1]))" "$source_dir")
+      if [[ "$dir_src_real" != "$harness_local"/* ]]; then
+        echo -e "  ${RED}BLOCK${RESET} $dir_src (source directory traversal rejected)"
+        d=$((d + 1))
+        continue
+      fi
+
+      if [[ -d "$source_dir" ]]; then
+        if [[ "$dry_run" == true ]]; then
+          # Count differences
+          local dir_changes=0
+          while IFS= read -r -d '' rel_file; do
+            local rel_path="${rel_file#$source_dir}"
+            local target_file="$target_dir$rel_path"
+            if [[ ! -f "$target_file" ]] || ! diff -q "$rel_file" "$target_file" >/dev/null 2>&1; then
+              dir_changes=$((dir_changes + 1))
+            fi
+          done < <(find "$source_dir" -type f -print0 2>/dev/null)
+          if (( dir_changes > 0 )); then
+            echo -e "  ${CYAN}DIR${RESET} $dir_dst (${dir_changes} file(s) changed)"
+          else
+            echo -e "  ${DIM}DIR${RESET} $dir_dst (up to date)"
+          fi
+        else
+          mkdir -p "$target_dir"
+          rsync -a "$source_dir" "$(dirname "$target_dir")/" 2>/dev/null || \
+            cp -R "$source_dir"/* "$target_dir/" 2>/dev/null || true
+          echo -e "  ${CYAN}DIR${RESET} $dir_dst (synced)"
+        fi
+      else
+        echo -e "  ${YELLOW}SKIP${RESET} $dir_dst (source dir missing)"
+      fi
+    else
+      echo -e "  ${DIM}DIR${RESET} $dir_dst ${YELLOW}(skipped — directory sync requires local mode)${RESET}"
+    fi
+
+    d=$((d + 1))
+  done
+
+  echo ""
+
+  # Re-fetch module manifests
+  if [[ "$dry_run" == false ]]; then
+    echo -e "${DIM}Re-fetching module manifests...${RESET}"
+    cmd_module fetch-all "." 2>/dev/null || true
+
+    # Drop mempalace.yaml if missing, trigger re-mine
+    if [[ ! -f "$REPO_ROOT/mempalace.yaml" ]]; then
+      cat > "$REPO_ROOT/mempalace.yaml" <<'MPEOF'
+# MemPalace config — auto-generated by harness update
+project: auto
+MPEOF
+      echo -e "${DIM}Created mempalace.yaml${RESET}"
+    fi
+    local mempalace_bin="$HOME/.mempalace/venv/bin/mempalace"
+    if [[ -x "$mempalace_bin" ]]; then
+      "$mempalace_bin" mine "$REPO_ROOT" >/dev/null 2>&1 &
+      echo -e "${DIM}Triggered mempalace re-mine (background)${RESET}"
+    fi
+
+    # Update local .harness-version
+    printf '%s\n' "$remote_version" > "$local_version_file"
+  fi
+
+  # Summary
+  echo ""
+  local total=$((updated + created + unchanged))
+  echo -e "${BOLD}Summary:${RESET}"
+  if (( created > 0 )); then
+    echo -e "  ${GREEN}New:${RESET}       $created"
+  fi
+  if (( updated > 0 )); then
+    echo -e "  ${CYAN}Updated:${RESET}   $updated"
+  fi
+  echo -e "  ${DIM}Unchanged:${RESET} $unchanged"
+  echo -e "  ${DIM}Total:${RESET}     $total"
+
+  if [[ ${#changed_files[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${BOLD}Changed files:${RESET}"
+    for cf in "${changed_files[@]}"; do
+      echo "  $cf"
+    done
+  fi
+
+  if [[ "$dry_run" == true ]]; then
+    echo ""
+    echo -e "${YELLOW}Dry run — no files were modified.${RESET}"
+  fi
+}
+
+cmd_content() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    feedback)
+      if [[ $# -lt 2 ]]; then
+        echo "Usage: harness content feedback <asset-id> <liked|disliked|edited> [\"notes\"]"
+        exit 1
+      fi
+      local asset_id="$1"
+      local rating="$2"
+      local notes="${3:-}"
+
+      if [[ "$rating" != "liked" && "$rating" != "disliked" && "$rating" != "edited" ]]; then
+        echo "ERROR: Rating must be liked, disliked, or edited"
+        exit 1
+      fi
+
+      # Sanitize user input before echoing
+      local safe_id safe_notes
+      safe_id="$(printf '%s' "$asset_id" | tr -d '\000-\037\177')"
+      safe_notes="$(printf '%s' "$notes" | tr -d '\000-\037\177')"
+
+      echo "HARNESS — Content feedback"
+      echo ""
+      echo "  Asset:  $safe_id"
+      echo "  Rating: $rating"
+      if [[ -n "$safe_notes" ]]; then
+        echo "  Notes:  $safe_notes"
+      fi
+      echo ""
+      echo "  [Not yet implemented] Feedback persistence and brand profile adaptation coming soon."
+      exit 2
+      ;;
+    help|*)
+      cat <<CONTENTEOF
+Usage:
+  harness content feedback <id> <liked|disliked|edited> ["notes"]   Rate a content asset
+  harness content help                                               Show this message
+CONTENTEOF
+      ;;
+  esac
+}
+
+cmd_simulate() {
+  if [[ $# -lt 1 ]]; then
+    echo "Usage: harness simulate <scenario-file-or-dir>"
+    echo "       harness simulate --report"
+    echo ""
+    echo "Runs business scenario simulations against module manifests."
+    echo "Use --report to see results from previous runs."
+    exit 1
+  fi
+
+  if [[ "$1" == "--report" ]]; then
+    local sim_dir
+    sim_dir="$(pwd)/.harness/simulations"
+    python3 "$SCRIPT_DIR/lib/simulation_reporter.py" "$sim_dir"
+  else
+    python3 "$SCRIPT_DIR/lib/simulator.py" "$1" "$SCRIPT_DIR"
+  fi
+}
+
+cmd_validate_all() {
+  local deploy_path="${1:-.}"
+  python3 "$SCRIPT_DIR/lib/full_validator.py" "$deploy_path" "$SCRIPT_DIR"
+}
+
+cmd_improve() {
+  echo "HARNESS — Improve"
+  echo ""
+  echo "  This command will generate fix PRs for simulation findings."
+  echo "  Run 'harness simulate --report' first to see what needs fixing."
+  echo ""
+  echo "  (Coming soon — feedback loop integration)"
+}
+
+cmd_help() {
+  cat <<EOF
+HARNESS — CLI toolkit
+
+Usage:
+  harness status [--watch] [--all]
+  harness clean [hours]
+  harness module <validate|list|deps|fetch|fetch-all|help>
+  harness vertical <scaffold|list|help>
+  harness hook <list|fire|help>
+  harness permission <check|audit|help>
+  harness config <resolve|validate|help>
+  harness deploy <vertical> <path> [--client name]
+  harness agent <list|help>
+  harness cron <list|run|help>
+  harness channel <list|poll|classify|help>
+  harness inbox <list|reply|dispatch|help>
+  harness content <feedback|help>
+  harness simulate <scenario|dir>
+  harness simulate --report
+  harness improve
+  harness validate-all [deploy-path]
+  harness update [--force] [--dry-run]
+  harness dispatch [--once|--watch]
+  harness desk <list|update|help>
+  harness dashboard [--client name] [--open]
+  harness tools <tool-name> [args]
+  harness help
+
+Commands:
+  status      Show active agent sessions for this repo
+  clean       Remove closed sessions older than N hours (default: 24)
+  module      Module management (validate, list, deps, fetch)
+  vertical    Vertical templates (scaffold, list)
+  hook        Hook registry and execution
+  permission  Permission checking and auditing
+  config      Config resolution and validation
+  deploy      Full deployment setup (scaffold + init + resolve + validate)
+  agent       Agent type registry
+  cron        Scheduled job management
+  channel     Channel adapters (iMessage, Telegram)
+  inbox       Customer message inbox
+  content     Content asset feedback and brand learning
+  simulate    Run business scenario simulations against modules
+  improve     Generate fixes for simulation gaps (coming soon)
+  validate-all  Full deployment validation in one command
+  update      Update backbone files from HARNESS repo
+  dispatch    Process inbox messages (route to tools or service desk)
+  desk        Service desk — managed queue for setup change requests
+  dashboard   Generate client-facing HTML business dashboard
+  tools       Run module tools directly (create-client, create-invoice, etc.)
+  help        Show this message
+
+Session Directory: $SESSIONS_DIR
+EOF
+}
+
+cmd_dispatch() {
+  python3 "$SCRIPT_DIR/lib/orchestrator.py" "$@"
+}
+
+cmd_desk() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    list)
+      python3 "$SCRIPT_DIR/lib/service_desk.py" list "$@"
+      ;;
+    update)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness desk update <ticket-id> --status <status> [--note \"text\"]"
+        exit 1
+      fi
+      python3 "$SCRIPT_DIR/lib/service_desk.py" update "$@"
+      ;;
+    help|*)
+      cat <<DESKEOF
+Usage:
+  harness desk list [--status open] [--client name]   List service desk tickets
+  harness desk update <id> --status <s> [--note ""]    Update a ticket
+  harness desk help                                    Show this message
+DESKEOF
+      ;;
+  esac
+}
+
+cmd_dashboard() {
+  python3 "$SCRIPT_DIR/lib/dashboard.py" "$@"
+}
+
+cmd_tools() {
+  python3 "$SCRIPT_DIR/lib/module_tools.py" "$@"
+}
+
+# Route subcommand
+case "${1:-status}" in
+  status)     shift 2>/dev/null || true; cmd_status "$@" ;;
+  clean)      shift 2>/dev/null || true; cmd_clean "$@" ;;
+  module)     shift 2>/dev/null || true; cmd_module "$@" ;;
+  vertical)   shift 2>/dev/null || true; cmd_vertical "$@" ;;
+  hook)       shift 2>/dev/null || true; cmd_hook "$@" ;;
+  permission) shift 2>/dev/null || true; cmd_permission "$@" ;;
+  config)     shift 2>/dev/null || true; cmd_config "$@" ;;
+  deploy)     shift 2>/dev/null || true; cmd_deploy "$@" ;;
+  agent)      shift 2>/dev/null || true; cmd_agent "$@" ;;
+  cron)       shift 2>/dev/null || true; cmd_cron "$@" ;;
+  channel)    shift 2>/dev/null || true; cmd_channel "$@" ;;
+  inbox)      shift 2>/dev/null || true; cmd_inbox "$@" ;;
+  content)    shift 2>/dev/null || true; cmd_content "$@" ;;
+  simulate)    shift 2>/dev/null || true; cmd_simulate "$@" ;;
+  improve)     shift 2>/dev/null || true; cmd_improve "$@" ;;
+  validate-all) shift 2>/dev/null || true; cmd_validate_all "$@" ;;
+  update)     shift 2>/dev/null || true; cmd_update "$@" ;;
+  dispatch)   shift 2>/dev/null || true; cmd_dispatch "$@" ;;
+  desk)       shift 2>/dev/null || true; cmd_desk "$@" ;;
+  dashboard)  shift 2>/dev/null || true; cmd_dashboard "$@" ;;
+  tools)      shift 2>/dev/null || true; cmd_tools "$@" ;;
+  help)       cmd_help ;;
+  *)          echo "Unknown command: $1"; cmd_help; exit 1 ;;
+esac

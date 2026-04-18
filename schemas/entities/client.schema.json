@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/client.schema.json",
+  "title": "Client",
+  "description": "A customer — residential or commercial — that jobs are performed for",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string" },
+    "type": { "type": "string", "enum": ["residential", "commercial"] },
+    "address": {
+      "type": "object",
+      "properties": {
+        "street": { "type": "string" },
+        "city": { "type": "string" },
+        "state": { "type": "string" },
+        "zip": { "type": "string" }
+      },
+      "required": ["street", "city", "state", "zip"]
+    },
+    "phone": { "type": "string" },
+    "email": { "type": "string", "format": "email" },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "required": ["id", "name", "created_at"]
+}

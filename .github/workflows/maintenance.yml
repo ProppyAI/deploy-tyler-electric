@@ -1,0 +1,17 @@
+# Calls the HARNESS daily maintenance pipeline.
+# Drop this file into any ProppyAI repo.
+
+name: "Daily Maintenance"
+
+on:
+  schedule:
+    - cron: '0 6 * * *'  # 6am UTC daily
+  workflow_dispatch:       # Manual trigger
+
+jobs:
+  maintenance:
+    uses: ProppyAI/HARNESS/.github/workflows/daily-maintenance.yml@main
+    with:
+      run_browser_tests: false    # Set true for UI projects
+      test_command: "npm test"    # Adjust per repo
+    secrets: inherit

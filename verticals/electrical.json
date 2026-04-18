@@ -1,0 +1,66 @@
+{
+  "name": "electrical",
+  "description": "Electrical contractor back office",
+
+  "modules": {
+    "required": [
+      "estimator",
+      "invoicing",
+      "scheduling",
+      "crm"
+    ],
+    "recommended": [
+      "permit-tracker",
+      "nec-compliance",
+      "crew-manager",
+      "material-pricer",
+      "content-engine",
+      "social-media",
+      "marketing"
+    ],
+    "optional": [
+      "accounting"
+    ]
+  },
+
+  "entity_extensions": {
+    "job": {
+      "properties": {
+        "service_size_amps": { "type": "number" },
+        "panel_type": { "type": "string", "enum": ["main", "sub", "meter"] },
+        "voltage": { "type": "string", "enum": ["120/240", "208/120", "480/277"] }
+      }
+    },
+    "crew-member": {
+      "properties": {
+        "license_type": { "type": "string", "enum": ["master", "journeyman", "apprentice"] },
+        "license_number": { "type": "string" },
+        "license_expiry": { "type": "string", "format": "date" }
+      }
+    }
+  },
+
+  "config_defaults": {
+    "estimator": {
+      "markup_percentage": 25,
+      "labor_rate_journeyman": 85,
+      "labor_rate_apprentice": 45
+    },
+    "crew-manager": {
+      "journeyman_to_apprentice_ratio": "1:2",
+      "require_master_on_commercial": true
+    },
+    "permit-tracker": {
+      "default_jurisdiction": "",
+      "auto_check_interval": "daily"
+    },
+    "content-engine": {
+      "higgsfield_base_url": "https://studio.higgsfield.ai",
+      "browser_connect_method": "persistent-context",
+      "browser_data_dir": ".harness/browser-data",
+      "asset_output_dir": ".harness/content-assets",
+      "generation_timeout_seconds": 300,
+      "auto_generate_on_job_complete": true
+    }
+  }
+}

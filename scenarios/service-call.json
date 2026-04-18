@@ -1,0 +1,47 @@
+{
+  "name": "Emergency Service Call",
+  "description": "Customer reports electrical issue — same-day troubleshooting and repair",
+  "steps": [
+    {
+      "step": 1,
+      "action": "channel.classify",
+      "input": { "text": "My outlets in the kitchen stopped working and I smell something burning" },
+      "expect": { "intent": "technical", "auto_dispatch": false }
+    },
+    {
+      "step": 2,
+      "action": "module.has_tool",
+      "module": "crm",
+      "tool": "create-client",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 3,
+      "action": "module.has_tool",
+      "module": "scheduling",
+      "tool": "check-conflicts",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 4,
+      "action": "module.has_tool",
+      "module": "scheduling",
+      "tool": "assign-crew",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 5,
+      "action": "module.has_tool",
+      "module": "estimator",
+      "tool": "create-estimate",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 6,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "create-invoice",
+      "expect": { "exists": true }
+    }
+  ]
+}

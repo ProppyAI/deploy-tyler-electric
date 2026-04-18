@@ -1,0 +1,61 @@
+{
+  "name": "Invoice and Payment Cycle",
+  "description": "Full billing lifecycle — invoice creation, sending, follow-up, payment, review request",
+  "steps": [
+    {
+      "step": 1,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "create-invoice",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 2,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "send-invoice",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 3,
+      "action": "hook.exists",
+      "module": "invoicing",
+      "event": "PostInvoiceSent",
+      "expect": { "registered": true }
+    },
+    {
+      "step": 4,
+      "action": "channel.classify",
+      "input": { "text": "What do I owe for the panel work?" },
+      "expect": { "intent": "billing-inquiry", "auto_dispatch": true }
+    },
+    {
+      "step": 5,
+      "action": "module.has_tool",
+      "module": "invoicing",
+      "tool": "record-payment",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 6,
+      "action": "hook.exists",
+      "module": "invoicing",
+      "event": "PaymentReceived",
+      "expect": { "registered": true }
+    },
+    {
+      "step": 7,
+      "action": "module.has_tool",
+      "module": "marketing",
+      "tool": "request-review",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 8,
+      "action": "hook.exists",
+      "module": "marketing",
+      "event": "JobCompleted",
+      "expect": { "registered": true }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+# Calls the HARNESS self-healing PR pipeline.
+# Drop this file into any ProppyAI repo.
+
+name: "PR Pipeline"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write  # Required by claude-code-action for OIDC auth
+
+jobs:
+  pipeline:
+    uses: ProppyAI/HARNESS/.github/workflows/pr-pipeline.yml@v1
+    secrets: inherit

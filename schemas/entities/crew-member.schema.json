@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.harness.proppyai.com/entities/v1/crew-member.schema.json",
+  "title": "Crew Member",
+  "description": "A worker with role, rate, and certifications",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string" },
+    "role": { "type": "string" },
+    "email": { "type": "string", "format": "email" },
+    "phone": { "type": "string" },
+    "hourly_rate": { "type": "number" },
+    "certifications": { "type": "array", "items": { "type": "string" } },
+    "active": { "type": "boolean", "default": true },
+    "hired_date": { "type": "string", "format": "date" }
+  },
+  "required": ["id", "name", "role", "hourly_rate"]
+}

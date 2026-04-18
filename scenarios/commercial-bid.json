@@ -1,0 +1,76 @@
+{
+  "name": "Commercial Electrical Bid",
+  "description": "Commercial job — multi-permit, crew requirements, NEC compliance, progress billing",
+  "steps": [
+    {
+      "step": 1,
+      "action": "module.has_tool",
+      "module": "crm",
+      "tool": "create-client",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 2,
+      "action": "module.has_tool",
+      "module": "nec-compliance",
+      "tool": "check-compliance",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 3,
+      "action": "module.has_tool",
+      "module": "nec-compliance",
+      "tool": "calculate-derating",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 4,
+      "action": "module.has_tool",
+      "module": "material-pricer",
+      "tool": "calculate-materials",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 5,
+      "action": "module.has_tool",
+      "module": "estimator",
+      "tool": "create-estimate",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 6,
+      "action": "module.has_tool",
+      "module": "crew-manager",
+      "tool": "check-licenses",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 7,
+      "action": "module.has_tool",
+      "module": "permit-tracker",
+      "tool": "file-permit",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 8,
+      "action": "module.has_tool",
+      "module": "scheduling",
+      "tool": "create-schedule",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 9,
+      "action": "module.has_tool",
+      "module": "content-engine",
+      "tool": "render-proposal",
+      "expect": { "exists": true }
+    },
+    {
+      "step": 10,
+      "action": "module.has_tool",
+      "module": "content-engine",
+      "tool": "generate-ad",
+      "description": "Generate campaign ad for commercial electrical services"
+    }
+  ]
+}
