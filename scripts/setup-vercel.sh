@@ -78,10 +78,10 @@ echo "-- Pushing env vars to Vercel (production + preview) --"
 
 cd "$CLIENT_APP_DIR"
 
-# Skip blank-value lines and comments
-while IFS= read -r line; do
+# Read the env file via FD 3 so inner vercel calls don't eat it on stdin.
+while IFS= read -r line <&3; do
   # strip comments and blanks
-  [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
+  [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
 
   key="${line%%=*}"
   value="${line#*=}"
@@ -92,16 +92,21 @@ while IFS= read -r line; do
     continue
   fi
 
-  # remove existing, ignore failures if key didn't exist
-  vercel env rm "$key" production --yes >/dev/null 2>&1 || true
-  vercel env rm "$key" preview --yes    >/dev/null 2>&1 || true
+  # remove any existing production value, ignore failures if key didn't exist.
+  # Explicit </dev/null on rm so it doesn't consume from FD 3.
+  vercel env rm "$key" production --yes </dev/null >/dev/null 2>&1 || true
 
-  # add to both production and preview
-  printf '%s' "$value" | vercel env add "$key" production >/dev/null 2>&1
-  printf '%s' "$value" | vercel env add "$key" preview    >/dev/null 2>&1
+  # add to production only — value is piped via stdin.
+  # Preview env is intentionally skipped: `vercel env add KEY preview`
+  # prompts interactively for a branch scope, which breaks non-TTY runs.
+  # Add preview env manually via the dashboard if PR previews are needed.
+  if ! printf '%s' "$value" | vercel env add "$key" production >/dev/null 2>&1; then
+    echo "  FAILED to set $key"
+    continue
+  fi
 
   echo "  set  $key"
-done < "$ENV_FILE"
+done 3< "$ENV_FILE"
 
 echo ""
 echo "-- Done. Triggering production deploy --"
