@@ -37,6 +37,11 @@
 #
 #   # See what would be applied without actually applying
 #   bash scripts/apply-migrations.sh --dry-run
+#
+# CONCURRENCY: Do not run this script in parallel against the same project.
+# Migrations are not serialized at the script level; callers must guarantee
+# single-instance execution (CI: use concurrency.group; humans: don't share a
+# project ref).
 
 set -euo pipefail
 
@@ -63,7 +68,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,40p' "$0"
+      sed -n '2,44p' "$0"
       exit 0
       ;;
     *)
@@ -95,7 +100,7 @@ if [[ -z "${SUPABASE_ACCESS_TOKEN:-}" ]]; then
   exit 1
 fi
 
-PROJECT_REF="${SUPABASE_PROJECT_REF:-$(python3 -c "import json; print(json.load(open('$REPO_ROOT/harness.json'))['deployment']['supabase_project_ref'])")}"
+PROJECT_REF="${SUPABASE_PROJECT_REF:-$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['deployment']['supabase_project_ref'])" "$REPO_ROOT/harness.json")}"
 if [[ ! "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]]; then
   echo "ERROR: invalid SUPABASE_PROJECT_REF format: $PROJECT_REF"
   echo "       Expected 20 lowercase alphanumeric chars (Supabase project ref shape)."
@@ -201,6 +206,17 @@ record_applied() {
     >/dev/null
 }
 
+# CONCURRENCY: This script does not serialize concurrent invocations against
+# the same Supabase project. If two CI jobs run simultaneously and both see
+# the same file as pending, both will execute it. Migrations should be
+# idempotent (CREATE TABLE IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS)
+# OR callers must serialize themselves (e.g., GitHub Actions concurrency: group).
+# A pg_advisory_xact_lock approach was considered but each Management API
+# POST is a separate session, so session-locks do not span the pending-list
+# read and the per-file apply. Pre-claiming the tracking row would break the
+# current single-transaction atomicity guarantee. Document instead of work
+# around.
+#
 # Apply a single migration file in its own transaction.
 # Args: $1 = path to .sql file
 apply_one() {
@@ -220,16 +236,56 @@ import re, sys
 text = sys.stdin.read()
 lines = text.split('\n')
 # Strip leading BEGIN / BEGIN TRANSACTION / BEGIN ISOLATION LEVEL ...
-# (allow blank lines and comments before it)
+# (allow blank lines, -- line comments, and /* */ block comments before it)
 i = 0
-while i < len(lines) and (lines[i].strip() == '' or lines[i].strip().startswith('--')):
-    i += 1
+in_block = False
+while i < len(lines):
+    s = lines[i].strip()
+    if in_block:
+        if '*/' in s:
+            in_block = False
+        i += 1
+        continue
+    if s == '' or s.startswith('--'):
+        i += 1
+        continue
+    if s.startswith('/*'):
+        # Single-line /* ... */ vs multi-line opener
+        if '*/' in s[2:]:
+            i += 1
+            continue
+        in_block = True
+        i += 1
+        continue
+    break
 if i < len(lines) and re.match(r'^BEGIN\b', lines[i].strip().upper()):
     lines[i] = ''
 # Strip trailing COMMIT; or END; (Postgres synonym for COMMIT)
+# Mirror the leading skip: tolerate blank lines, -- comments, and /* */ blocks.
+# Scanning bottom-up, a block comment is identified by '*/' on a line (close)
+# and we continue past lines until we consume the matching '/*' opener.
 j = len(lines) - 1
-while j >= 0 and (lines[j].strip() == '' or lines[j].strip().startswith('--')):
-    j -= 1
+in_block = False
+while j >= 0:
+    s = lines[j].strip()
+    if in_block:
+        if '/*' in s:
+            in_block = False
+        j -= 1
+        continue
+    if s == '' or s.startswith('--'):
+        j -= 1
+        continue
+    if s.endswith('*/'):
+        # Single-line /* ... */ vs multi-line closer
+        # Check if '/*' appears on the same line BEFORE the trailing '*/'.
+        if '/*' in s[:-2]:
+            j -= 1
+            continue
+        in_block = True
+        j -= 1
+        continue
+    break
 if j >= 0 and re.match(r'^(COMMIT|END)\b', lines[j].strip().upper()):
     lines[j] = ''
 print('\n'.join(lines))
@@ -267,7 +323,19 @@ done
 # were fed from a failed process substitution directly, it would silently
 # produce an empty array and cause every migration to be re-applied.
 if [[ "$MODE" == "dry-run" ]]; then
-  applied_output=$(list_applied 2>/dev/null) || applied_output=""
+  # Keep dry-run non-fatal but make any degradation visible. If
+  # schema_migrations is missing or the API errors transiently, the pending
+  # list below would otherwise misleadingly include already-applied files —
+  # surface a WARNING so the operator can decide whether to trust the output.
+  local_err=$(mktemp)
+  if ! applied_output=$(list_applied 2>"$local_err"); then
+    echo "WARNING: could not read schema_migrations (table missing or API error). Pending list below may be inaccurate." >&2
+    if [[ -s "$local_err" ]]; then
+      sed 's/^/  detail: /' "$local_err" >&2
+    fi
+    applied_output=""
+  fi
+  rm -f "$local_err"
 else
   if ! applied_output=$(list_applied); then
     echo "ERROR: failed to read applied-migrations list — aborting to prevent re-apply."
