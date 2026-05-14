@@ -130,15 +130,18 @@ echo ""
 run_sql() {
   local sql="$1"
   local label="$2"
-  local body
-  body=$(python3 -c "import json,sys; print(json.dumps({'query': sys.argv[1]}))" "$sql")
+  # Stream the SQL through bash's printf builtin (no execve) into python3's
+  # stdin (no argv) and hand curl the JSON body via /dev/fd process
+  # substitution (no --data argv). This keeps the request body off the
+  # shell argv path so large migrations cannot trip ARG_MAX on either
+  # python3 or curl. Mirrors the original script's --data @<(...) pattern.
   local response
   response=$(curl -sS \
     --fail-with-body \
     -X POST "$API_URL" \
     -H "Authorization: Bearer ${SUPABASE_ACCESS_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data "$body" \
+    --data @<(printf '%s' "$sql" | python3 -c "import json,sys; print(json.dumps({'query': sys.stdin.read()}))") \
     2>&1) || {
     echo "ERROR ($label): Management API call failed."
     echo "$response"
