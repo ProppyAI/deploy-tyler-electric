@@ -76,6 +76,18 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Validate a migration filename matches the safe shape. Filenames flow into
+# SQL string literals and shell loops; enforce the pattern the inline
+# comments assume rather than trusting the source dir.
+assert_safe_filename() {
+  local fname="$1"
+  if [[ ! "$fname" =~ ^[0-9A-Za-z_.-]+\.sql$ ]]; then
+    echo "ERROR: unsafe migration filename rejected: $fname"
+    echo "       Filenames must match: ^[0-9A-Za-z_.-]+\\.sql$"
+    exit 1
+  fi
+}
+
 if [[ -z "${SUPABASE_ACCESS_TOKEN:-}" ]]; then
   echo "ERROR: SUPABASE_ACCESS_TOKEN is required."
   echo "Generate one at: https://supabase.com/dashboard/account/tokens"
@@ -84,6 +96,11 @@ if [[ -z "${SUPABASE_ACCESS_TOKEN:-}" ]]; then
 fi
 
 PROJECT_REF="${SUPABASE_PROJECT_REF:-$(python3 -c "import json; print(json.load(open('$REPO_ROOT/harness.json'))['deployment']['supabase_project_ref'])")}"
+if [[ ! "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]]; then
+  echo "ERROR: invalid SUPABASE_PROJECT_REF format: $PROJECT_REF"
+  echo "       Expected 20 lowercase alphanumeric chars (Supabase project ref shape)."
+  exit 1
+fi
 MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/../HARNESS/client-app/supabase/migrations}"
 
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
@@ -122,6 +139,27 @@ run_sql() {
     echo "$response"
     exit 1
   }
+  # Defense in depth: catch HTTP-200-with-error-body. Supabase Management API
+  # normally returns 4xx for SQL errors (caught by --fail-with-body above),
+  # but probe for an error/message key as a safety net.
+  local probe
+  probe=$(printf '%s' "$response" | python3 -c "
+import json, sys
+try:
+    data = json.loads(sys.stdin.read())
+except Exception:
+    sys.exit(0)
+if isinstance(data, dict):
+    for key in ('error', 'message'):
+        if key in data and data[key]:
+            print(f'API_ERROR: {key}={data[key]}')
+            sys.exit(1)
+" 2>&1) || {
+    echo "ERROR ($label): API returned a non-error HTTP status but the response body contains an error key."
+    echo "$probe"
+    echo "$response"
+    exit 1
+  }
   echo "$response"
 }
 
@@ -154,6 +192,7 @@ if isinstance(data, list):
 # Record a migration as applied (called after a successful per-file apply).
 record_applied() {
   local filename="$1"
+  assert_safe_filename "$filename"
   # Use parameterized-safe value via printf %q-style escaping; the filename
   # is constrained to NN_name.sql shapes so this is safe.
   run_sql \
@@ -168,6 +207,7 @@ apply_one() {
   local file="$1"
   local fname
   fname=$(basename "$file")
+  assert_safe_filename "$fname"
   local content
   content=$(cat "$file")
   # Wrap in BEGIN/COMMIT so this file's statements are atomic. If the
@@ -176,33 +216,39 @@ apply_one() {
   # if they're present at the start/end of the file (whitespace-tolerant).
   local stripped
   stripped=$(printf '%s\n' "$content" | python3 -c "
-import sys
+import re, sys
 text = sys.stdin.read()
 lines = text.split('\n')
-# Strip leading BEGIN; (allow trailing whitespace + comments before it)
+# Strip leading BEGIN / BEGIN TRANSACTION / BEGIN ISOLATION LEVEL ...
+# (allow blank lines and comments before it)
 i = 0
 while i < len(lines) and (lines[i].strip() == '' or lines[i].strip().startswith('--')):
     i += 1
-if i < len(lines) and lines[i].strip().upper().rstrip(';').strip() == 'BEGIN':
+if i < len(lines) and re.match(r'^BEGIN\b', lines[i].strip().upper()):
     lines[i] = ''
-# Strip trailing COMMIT;
+# Strip trailing COMMIT; or END; (Postgres synonym for COMMIT)
 j = len(lines) - 1
 while j >= 0 and (lines[j].strip() == '' or lines[j].strip().startswith('--')):
     j -= 1
-if j >= 0 and lines[j].strip().upper().rstrip(';').strip() == 'COMMIT':
+if j >= 0 and re.match(r'^(COMMIT|END)\b', lines[j].strip().upper()):
     lines[j] = ''
 print('\n'.join(lines))
 ")
+  # Include the schema_migrations INSERT inside the same transaction so the
+  # migration and its tracking row commit atomically — prevents the failure
+  # mode where the migration lands but record_applied is never called.
   local wrapped
   wrapped="BEGIN;
 ${stripped}
+INSERT INTO public.schema_migrations (filename) VALUES ('${fname}') ON CONFLICT (filename) DO NOTHING;
 COMMIT;"
   run_sql "$wrapped" "apply ${fname}" >/dev/null
 }
 
 # --- Mode dispatch ---
 
-ensure_tracking_table
+# Don't create the tracking table in dry-run — that mode must be read-only.
+[[ "$MODE" != "dry-run" ]] && ensure_tracking_table
 
 mapfile -t ALL_FILES < <(ls -1 "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort)
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
@@ -210,7 +256,28 @@ if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
   exit 0
 fi
 
-mapfile -t APPLIED < <(list_applied)
+# Validate every discovered filename before any further processing — catches
+# hostile filenames even for files that won't be applied this run.
+for _f in "${ALL_FILES[@]}"; do
+  assert_safe_filename "$(basename "$_f")"
+done
+
+# Capture list_applied output explicitly so a failure (network blip, auth
+# expiry, table missing) is caught before APPLIED is populated. If mapfile
+# were fed from a failed process substitution directly, it would silently
+# produce an empty array and cause every migration to be re-applied.
+if [[ "$MODE" == "dry-run" ]]; then
+  applied_output=$(list_applied 2>/dev/null) || applied_output=""
+else
+  if ! applied_output=$(list_applied); then
+    echo "ERROR: failed to read applied-migrations list — aborting to prevent re-apply."
+    exit 1
+  fi
+fi
+APPLIED=()
+while IFS= read -r _line; do
+  [[ -n "$_line" ]] && APPLIED+=("$_line")
+done <<<"$applied_output"
 
 # Compute pending = ALL_FILES minus APPLIED (by basename match)
 PENDING=()
@@ -242,9 +309,17 @@ case "$MODE" in
         fi
       done
       if [[ $target_found -eq 0 ]]; then
-        echo "ERROR: --bootstrap-up-to target not in pending list: $BOOTSTRAP_UP_TO"
-        echo "       Pending files:"
-        for f in "${PENDING[@]}"; do echo "         $(basename "$f")"; done
+        # Check whether the target exists in ALL_FILES (already applied) vs truly missing.
+        for f in "${ALL_FILES[@]}"; do
+          if [[ "$(basename "$f")" == "$BOOTSTRAP_UP_TO" ]]; then
+            echo "Note: --bootstrap-up-to target is already recorded as applied: $BOOTSTRAP_UP_TO"
+            echo "Nothing to bootstrap. Run without --bootstrap-up-to to see pending state."
+            exit 0
+          fi
+        done
+        echo "ERROR: --bootstrap-up-to target not found in migrations dir: $BOOTSTRAP_UP_TO"
+        echo "       Available files in $MIGRATIONS_DIR:"
+        for f in "${ALL_FILES[@]}"; do echo "         $(basename "$f")"; done
         exit 1
       fi
       # Collect pending files up to and including BOOTSTRAP_UP_TO (sorted order)
@@ -290,7 +365,6 @@ case "$MODE" in
       fname=$(basename "$f")
       echo -n "  - $fname ... "
       apply_one "$f"
-      record_applied "$fname"
       echo "OK"
     done
     echo ""
@@ -298,9 +372,11 @@ case "$MODE" in
     ;;
 esac
 
-echo ""
-echo "Verifying applied list:"
-applied_after=$(run_sql \
-  "SELECT filename, applied_at FROM public.schema_migrations ORDER BY filename;" \
-  "verify applied list")
-echo "$applied_after" | python3 -m json.tool 2>/dev/null || echo "$applied_after"
+if [[ "$MODE" != "dry-run" ]]; then
+  echo ""
+  echo "Verifying applied list:"
+  applied_after=$(run_sql \
+    "SELECT filename, applied_at FROM public.schema_migrations ORDER BY filename;" \
+    "verify applied list")
+  echo "$applied_after" | python3 -m json.tool 2>/dev/null || echo "$applied_after"
+fi
