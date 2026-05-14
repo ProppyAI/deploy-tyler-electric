@@ -235,30 +235,57 @@ apply_one() {
 import re, sys
 text = sys.stdin.read()
 lines = text.split('\n')
+def strip_inline_blocks(s):
+    # Remove complete /* ... */ segments from a single line so the scanner
+    # sees the surrounding SQL keywords (e.g. 'COMMIT; /* note */' -> 'COMMIT;').
+    # Multi-line blocks where /* opens without a matching */ on the same line
+    # are left alone — the in_block state machine handles those.
+    while True:
+        start = s.find('/*')
+        if start < 0:
+            return s
+        end = s.find('*/', start + 2)
+        if end < 0:
+            return s
+        s = s[:start] + s[end + 2:]
 # Strip leading BEGIN / BEGIN TRANSACTION / BEGIN ISOLATION LEVEL ...
 # (allow blank lines, -- line comments, and /* */ block comments before it)
 i = 0
 in_block = False
+block_start = -1  # index of the line that opened the current multi-line block
 while i < len(lines):
-    s = lines[i].strip()
+    s = strip_inline_blocks(lines[i]).strip()
     if in_block:
-        if '*/' in s:
+        idx = s.find('*/')
+        if idx >= 0:
             in_block = False
+            # Re-evaluate content AFTER */ on this line — catches the
+            # '*/ BEGIN;' pattern where the block closer and BEGIN share a line.
+            remainder = s[idx + 2:].strip()
+            if remainder and not remainder.startswith('--') and not remainder.startswith('/*'):
+                # Replace this line with the surviving SQL so the BEGIN
+                # matcher below sees just the trailing statement. Also
+                # blank out the multi-line block we just walked through
+                # so the resulting SQL has no unclosed /* opener.
+                for k in range(block_start, i):
+                    lines[k] = ''
+                lines[i] = remainder
+                break
+            block_start = -1
         i += 1
         continue
     if s == '' or s.startswith('--'):
         i += 1
         continue
     if s.startswith('/*'):
-        # Single-line /* ... */ vs multi-line opener
-        if '*/' in s[2:]:
-            i += 1
-            continue
+        # After strip_inline_blocks, any '/*' still here is an unclosed
+        # multi-line opener — engage the state machine.
         in_block = True
+        block_start = i
         i += 1
         continue
     break
-if i < len(lines) and re.match(r'^BEGIN\b', lines[i].strip().upper()):
+if i < len(lines) and re.match(r'^BEGIN\b', strip_inline_blocks(lines[i]).strip().upper()):
     lines[i] = ''
 # Strip trailing COMMIT; or END; (Postgres synonym for COMMIT)
 # Mirror the leading skip: tolerate blank lines, -- comments, and /* */ blocks.
@@ -267,7 +294,7 @@ if i < len(lines) and re.match(r'^BEGIN\b', lines[i].strip().upper()):
 j = len(lines) - 1
 in_block = False
 while j >= 0:
-    s = lines[j].strip()
+    s = strip_inline_blocks(lines[j]).strip()
     if in_block:
         if '/*' in s:
             in_block = False
@@ -277,16 +304,13 @@ while j >= 0:
         j -= 1
         continue
     if s.endswith('*/'):
-        # Single-line /* ... */ vs multi-line closer
-        # Check if '/*' appears on the same line BEFORE the trailing '*/'.
-        if '/*' in s[:-2]:
-            j -= 1
-            continue
+        # After strip_inline_blocks, any line still ending in '*/' is the
+        # closer of a multi-line block — engage the state machine.
         in_block = True
         j -= 1
         continue
     break
-if j >= 0 and re.match(r'^(COMMIT|END)\b', lines[j].strip().upper()):
+if j >= 0 and re.match(r'^(COMMIT|END)\b', strip_inline_blocks(lines[j]).strip().upper()):
     lines[j] = ''
 print('\n'.join(lines))
 ")
@@ -328,6 +352,10 @@ if [[ "$MODE" == "dry-run" ]]; then
   # list below would otherwise misleadingly include already-applied files —
   # surface a WARNING so the operator can decide whether to trust the output.
   local_err=$(mktemp)
+  # Scope cleanup to abnormal termination (SIGINT, etc.) during this block.
+  # Explicit rm + trap-clear on the success path keeps the trap from firing
+  # during the script's normal exit later.
+  trap 'rm -f "$local_err"' EXIT
   if ! applied_output=$(list_applied 2>"$local_err"); then
     echo "WARNING: could not read schema_migrations (table missing or API error). Pending list below may be inaccurate." >&2
     if [[ -s "$local_err" ]]; then
@@ -336,6 +364,7 @@ if [[ "$MODE" == "dry-run" ]]; then
     applied_output=""
   fi
   rm -f "$local_err"
+  trap - EXIT
 else
   if ! applied_output=$(list_applied); then
     echo "ERROR: failed to read applied-migrations list — aborting to prevent re-apply."
