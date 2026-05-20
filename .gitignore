@@ -7,3 +7,6 @@
 # Tenant secrets — never committed
 .env.production
 .env.local
+
+# Local Netlify folder
+.netlify

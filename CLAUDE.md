@@ -45,12 +45,9 @@ These complement the Superpowers workflow — use them within any workflow stage
 
 ## HARNESS Skills
 
-- `/fix-pr-reviews <PR#>` — Autonomous PR review fix loop
-  - Reads bot PR reviews, classifies findings as REAL (actual bugs) vs NOISE (theoretical/cosmetic)
-  - Fixes REAL findings only, preserving original PR intent
-  - Pushes, polls for bot re-review, keeps turning until nothing addressable remains
-  - Writes to mempalace KG after each round — system learns noise patterns over time
-  - Options: `--repo owner/repo` (default current)
+- `/pr-review <PR#>` — local PR review+fix loop with up to 5 parallel reviewers (code quality, spec compliance, ProppyAI security always; `codex-cross-model` and `gstack-security-mirror` when gstack is installed on the developer machine), MemPalace noise memory, wait-for-all-reviewers aggregation, and auto-merge on convergence. Dispatched automatically by the global git pre-push hook on every push with an open PR.
+
+Note: this skill and the pre-push hook are installed per-developer via `bin/harness-setup-dev`, not bootstrapped into the repo itself.
 
 ## Backbone Updates
 

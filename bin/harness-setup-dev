@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# harness-setup-dev — one-shot per-developer machine setup
+#
+# Installs the ProppyAI /pr-review skill into ~/.claude/commands/ and wires
+# the global git pre-push hook that dispatches it on every push.
+#
+# The skill loops review → fix → push → review rounds on the pushed PR until
+# it converges APPROVED (auto-merge) or NEEDS-HUMAN. No cron, no allowlist —
+# any repo with a GitHub remote on this machine is reviewed on every push.
+#
+# Idempotent: safe to re-run after `harness update` to pull in skill changes.
+# Cleans up legacy launchd/scan artifacts from earlier versions.
+#
+# Usage:
+#   bash bin/harness-setup-dev            # install/update
+#   bash bin/harness-setup-dev --dry-run  # show what would change
+#   bash bin/harness-setup-dev --force    # overwrite any existing hook (normally cmp-skipped)
+
+set -euo pipefail
+
+FORCE=0
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    --force)   FORCE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    -h|--help)
+      sed -n '2,18p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "ERROR: unknown flag: $arg"
+      exit 1
+      ;;
+  esac
+done
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+SRC_SKILL="$HARNESS_ROOT/lib/user-commands/pr-review.md"
+SRC_HOOK="$HARNESS_ROOT/.claude/git-hooks/pre-push"
+
+DEST_CMD_DIR="$HOME/.claude/commands"
+DEST_HOOK_DIR="$HOME/.claude/git-hooks"
+DEST_SKILL="$DEST_CMD_DIR/pr-review.md"
+DEST_HOOK="$DEST_HOOK_DIR/pre-push"
+
+for f in "$SRC_SKILL" "$SRC_HOOK"; do
+  if [[ ! -f "$f" ]]; then
+    echo "ERROR: $f not found — is this script running from inside HARNESS?"
+    exit 1
+  fi
+done
+
+say() { echo "  -> $*"; }
+run() {
+  if (( DRY_RUN )); then
+    printf 'DRY-RUN: '; printf '%q ' "$@"; printf '\n'
+  else
+    "$@"
+  fi
+}
+
+mkdir -p "$DEST_CMD_DIR" "$DEST_HOOK_DIR"
+
+# --- Install /pr-review skill ---------------------------------------------
+if [[ ! -f "$DEST_SKILL" ]] || ! cmp -s "$SRC_SKILL" "$DEST_SKILL"; then
+  say "install /pr-review skill"
+  run cp -- "$SRC_SKILL" "$DEST_SKILL"
+else
+  say "/pr-review skill already current"
+fi
+
+# --- Install global pre-push hook -----------------------------------------
+install_hook=0
+if [[ ! -f "$DEST_HOOK" ]]; then
+  install_hook=1
+elif ! cmp -s "$SRC_HOOK" "$DEST_HOOK"; then
+  install_hook=1
+fi
+
+if (( install_hook )); then
+  say "install global pre-push hook at $DEST_HOOK"
+  run cp -- "$SRC_HOOK" "$DEST_HOOK"
+  run chmod +x "$DEST_HOOK"
+else
+  say "pre-push hook already current"
+fi
+
+# --- Set core.hooksPath globally ------------------------------------------
+current_hooks_path="$(git config --global --get core.hooksPath 2>/dev/null || true)"
+if [[ "$current_hooks_path" != "$DEST_HOOK_DIR" ]]; then
+  say "set git core.hooksPath to $DEST_HOOK_DIR"
+  run git config --global core.hooksPath "$DEST_HOOK_DIR"
+else
+  say "core.hooksPath already set"
+fi
+
+# --- Install HARNESS-owned chain skills -----------------------------------
+# These skills are referenced by qualified name (harness:define-metric,
+# harness:trace-audit) from contracts/chain-manifest.json. Install them to
+# ~/.claude/skills/ so the qualified name resolves at skill-discovery time.
+HARNESS_SKILL_DIR="$HOME/.claude/skills"
+mkdir -p "$HARNESS_SKILL_DIR"
+for skill in define-metric trace-audit; do
+  src="$HARNESS_ROOT/lib/skills/${skill}.md"
+  dst="$HARNESS_SKILL_DIR/harness-${skill}.md"
+  if [[ ! -f "$src" ]]; then
+    say "WARN: $src not found; skipping harness:${skill}"
+    continue
+  fi
+  if [[ ! -f "$dst" ]] || ! cmp -s "$src" "$dst"; then
+    say "install harness:${skill} -> ${dst}"
+    run cp -- "$src" "$dst"
+  else
+    say "harness:${skill} skill already current"
+  fi
+done
+
+# --- Clean up legacy artifacts --------------------------------------------
+# Earlier versions installed /pr-review-scan.md, a launchd agent, and an
+# auto-enroll shim. The new architecture has none of those — remove any
+# stragglers so the hook-only flow is canonical.
+legacy_scan="$DEST_CMD_DIR/pr-review-scan.md"
+if [[ -f "$legacy_scan" ]]; then
+  say "remove legacy /pr-review-scan.md"
+  run rm -f "$legacy_scan"
+fi
+
+legacy_enroll="$HOME/.claude/pr-review-autoloop/auto-enroll.sh"
+if [[ -f "$legacy_enroll" ]]; then
+  say "remove legacy auto-enroll.sh"
+  run rm -f "$legacy_enroll"
+fi
+
+shopt -s nullglob
+for plist in "$HOME/Library/LaunchAgents"/com.propster.pr-review-scan.plist*; do
+  say "unload + remove legacy launchd plist: $(basename "$plist")"
+  if (( ! DRY_RUN )); then
+    launchctl unload "$plist" 2>/dev/null || true
+  fi
+  run rm -f "$plist"
+done
+shopt -u nullglob
+
+echo ""
+echo "Done."
+echo ""
+echo "Next:"
+echo "  1. Push a branch with an open PR from any local repo."
+echo "  2. Tail the hook log to watch the dispatch:"
+echo "       tail -f ~/Library/Logs/pr-review-hook.log"
+echo "  3. The /pr-review skill reviews the PR, fixes findings in a worktree,"
+echo "     pushes the fixes, re-reviews, and merges on convergence."
+echo ""
+echo "Re-run \`bash bin/harness-setup-dev\` any time (idempotent) to pull skill updates."

@@ -1,0 +1,105 @@
+# Gate G2 — PR preview deploys (customer-facing changes contract)
+#
+# Builds and deploys every PR that touches customer-facing code to a unique
+# Netlify preview URL. The URL is posted as a PR comment and check output so
+# /pr-review (and human reviewers) can hit the real built artifact before merge.
+#
+# Contract: contracts/customer-facing-changes.md · Gate: G2 · Ship: wave-0.1
+#
+# REQUIRED secrets (set once per repo via `bin/harness-init` or manually):
+#   - NETLIFY_AUTH_TOKEN           — personal access token from app.netlify.com/user/applications
+#   - NETLIFY_SITE_ID              — the tenant's Netlify site id (same one used by prod)
+#   - NETLIFY_SITE_NAME            — the tenant's netlify.app hostname prefix (used in NEXT_PUBLIC_APP_URL)
+#   - NEXT_PUBLIC_SUPABASE_URL     — Supabase project URL (intentionally public; NEXT_PUBLIC_ bakes into bundle)
+#   - NEXT_PUBLIC_SUPABASE_ANON_KEY — Supabase anon key (intentionally public; RLS-enforced server-side)
+#
+# No git linkage required — deploys via CLI + site id. Safe to run alongside
+# manual `netlify deploy --prod` during the G1/G9 transition.
+#
+# The paths filter mirrors the "customer-facing" definition from the contract.
+# Keep it in sync when the contract expands.
+
+name: pr-preview
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - "client-app/src/app/dashboard/**"
+      - "client-app/src/app/login/**"
+      - "client-app/src/app/auth/**"
+      - "client-app/src/app/api/**"
+      - "client-app/src/components/**"
+      - "client-app/src/lib/observability.ts"
+      - "client-app/src/lib/assert-non-empty.ts"
+      - "client-app/package.json"
+      - "client-app/package-lock.json"
+      - "client-app/netlify.toml"
+      - "app/**"  # non-ProppyAI module repos
+      - "src/app/**"  # non-ProppyAI module repos
+
+permissions:
+  contents: read
+  pull-requests: write  # post preview URL comment
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true  # cancel stale previews when a PR gets new pushes
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: client-app
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: client-app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Deploy preview to Netlify
+        id: deploy
+        run: |
+          set -euo pipefail
+          ALIAS="pr-${{ github.event.pull_request.number }}"
+          URL=$(npx --yes netlify-cli@17 deploy \
+            --build \
+            --site="${NETLIFY_SITE_ID}" \
+            --alias="${ALIAS}" \
+            --message="PR #${{ github.event.pull_request.number }} (${{ github.event.pull_request.head.sha }})" \
+            --json \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["deploy_url"])')
+          echo "url=${URL}" >> "$GITHUB_OUTPUT"
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_APP_URL: https://pr-${{ github.event.pull_request.number }}--${{ secrets.NETLIFY_SITE_NAME }}.netlify.app
+
+      - name: Comment preview URL on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            ### 🔗 Preview deploy (Gate G2)
+
+            **${{ steps.deploy.outputs.url }}**
+
+            Commit: `${{ github.event.pull_request.head.sha }}`
+            Built from: `${{ github.event.pull_request.head.ref }}`
+
+            `/pr-review` click-path-audit (G3) and browser-QA (G4) run against this URL. Human reviewers: click through every touched route before approving.

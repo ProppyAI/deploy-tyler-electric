@@ -774,6 +774,64 @@ CRONEOF
   esac
 }
 
+cmd_canary() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    run)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness canary run <tenant> [--tenant-repo <path>]" >&2
+        exit 1
+      fi
+      local tenant="$1"
+      shift
+      # Defense-in-depth: validate tenant name before delegating to the script.
+      # The script also validates, but rejecting early gives a clearer error
+      # location and prevents a malformed tenant from ever reaching exec.
+      if [[ ! "$tenant" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+        echo "ERROR: invalid tenant name '$tenant' — must match [a-zA-Z0-9_-]+" >&2
+        exit 1
+      fi
+      local tenant_repo=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --tenant-repo)
+            if [[ $# -lt 2 ]]; then
+              echo "ERROR: --tenant-repo requires a value" >&2
+              exit 1
+            fi
+            tenant_repo="$2"
+            shift 2
+            ;;
+          *) shift ;;
+        esac
+      done
+      [[ -n "$tenant_repo" ]] || tenant_repo="$SCRIPT_DIR/../$tenant"
+      if [[ ! "$tenant_repo" =~ ^[a-zA-Z0-9_./\-]+$ ]]; then
+        echo "ERROR: invalid --tenant-repo '$tenant_repo' — must match [a-zA-Z0-9_./-]+" >&2
+        exit 1
+      fi
+      if [[ ! -f "$tenant_repo/harness.json" ]]; then
+        echo "ERROR: tenant harness.json not found at $tenant_repo/harness.json" >&2
+        exit 1
+      fi
+      # Delegate to scripts/canary-tenant-daily.sh which handles gstack-skill dispatch.
+      exec "$SCRIPT_DIR/scripts/canary-tenant-daily.sh" "$tenant" "$tenant_repo"
+      ;;
+    help|*)
+      cat <<CANARYEOF
+Usage:
+  harness canary run <tenant> [--tenant-repo <path>]
+                                  Run a one-shot canary check on tenant.
+                                  Default tenant_repo: ../<tenant>.
+                                  Writes .harness/canary/<tenant>/<date>.json.
+  harness canary help             Show this message
+CANARYEOF
+      ;;
+  esac
+}
+
 cmd_channel() {
   local subcmd="${1:-help}"
   shift 2>/dev/null || true
@@ -1090,7 +1148,7 @@ print(f\"{dr['src']}\t{dr['dst']}\")
           fi
         else
           mkdir -p "$target_dir"
-          rsync -a "$source_dir" "$(dirname "$target_dir")/" 2>/dev/null || \
+          rsync -a "$source_dir" "$target_dir/" 2>/dev/null || \
             cp -R "$source_dir"/* "$target_dir/" 2>/dev/null || true
           echo -e "  ${CYAN}DIR${RESET} $dir_dst (synced)"
         fi
@@ -1248,6 +1306,7 @@ Usage:
   harness config <resolve|validate|help>
   harness deploy <vertical> <path> [--client name]
   harness agent <list|help>
+  harness canary <run|help>
   harness cron <list|run|help>
   harness channel <list|poll|classify|help>
   harness inbox <list|reply|dispatch|help>
@@ -1260,7 +1319,10 @@ Usage:
   harness dispatch [--once|--watch]
   harness desk <list|update|help>
   harness dashboard [--client name] [--open]
+  harness tenant <probe|help>
   harness tools <tool-name> [args]
+  harness metric <draft|approve|reject|verify> <session_id>
+  harness trace <generate|verify> <session_id>
   harness help
 
 Commands:
@@ -1284,7 +1346,10 @@ Commands:
   dispatch    Process inbox messages (route to tools or service desk)
   desk        Service desk — managed queue for setup change requests
   dashboard   Generate client-facing HTML business dashboard
+  tenant      Tenant probes — verify live deployment state
   tools       Run module tools directly (create-client, create-invoice, etc.)
+  metric      Draft/approve/reject/verify per-session success metric
+  trace       Generate/verify per-session evidence trace
   help        Show this message
 
 Session Directory: $SESSIONS_DIR
@@ -1325,8 +1390,174 @@ cmd_dashboard() {
   python3 "$SCRIPT_DIR/lib/dashboard.py" "$@"
 }
 
+cmd_tenant() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    probe)
+      # Run as a package module so `from lib...` imports resolve.
+      exec env PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
+        python3 -m lib.tenant_probe "$@"
+      ;;
+    help|"")
+      cat <<TENANTEOF
+HARNESS — tenant commands
+
+Usage:
+  harness tenant probe <client>             # run all probes, table output
+  harness tenant probe <client> --json
+  harness tenant probe <client> --only <names>
+  harness tenant probe <client> --skip <names>
+  harness tenant probe <client> --describe
+  harness tenant probe --list
+
+Verifies live tenant deployment state. Reads tenant credentials from
+the deploy repo's .env.production and operator credentials from
+~/.harness/operator.env. Both are scoped to the runner process and
+never logged or printed.
+TENANTEOF
+      ;;
+    *)
+      echo "Unknown tenant subcommand: $subcmd" >&2
+      exit 2
+      ;;
+  esac
+}
+
 cmd_tools() {
   python3 "$SCRIPT_DIR/lib/module_tools.py" "$@"
+}
+
+cmd_metric() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    draft)
+      # The skill drives the actual draft; this command is a no-op stub for parity.
+      # Future: could log the draft event to session.notify.
+      echo "metric draft is driven by the harness:define-metric skill; no-op here"
+      ;;
+    approve)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness metric approve <session_id>" >&2
+        exit 1
+      fi
+      harness_metric_approve "$1"
+      ;;
+    reject)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness metric reject <session_id> --reason \"<text>\"" >&2
+        exit 1
+      fi
+      local session_id="$1"
+      shift
+      local reason=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --reason)
+            if [[ $# -lt 2 ]]; then
+              echo "ERROR: --reason requires a value" >&2
+              exit 1
+            fi
+            reason="$2"
+            shift 2
+            ;;
+          *) shift ;;
+        esac
+      done
+      [[ -n "$reason" ]] || { echo "HARNESS: --reason required" >&2; exit 1; }
+      harness_metric_reject "$session_id" "$reason"
+      ;;
+    verify)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness metric verify <session_id>" >&2
+        exit 1
+      fi
+      harness_metric_verify "$1"
+      ;;
+    help|*)
+      cat <<METRICEOF
+Usage:
+  harness metric draft <session_id>                    Stub (skill-driven)
+  harness metric approve <session_id>                  Lock the metric, sha-pin, advance chain
+  harness metric reject <session_id> --reason "text"   Reject and set status=needs-human
+  harness metric verify <session_id>                   Sha-check the pinned metric file
+  harness metric help                                  Show this message
+METRICEOF
+      ;;
+  esac
+}
+
+cmd_trace() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    generate)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness trace generate <session_id>" >&2
+        exit 1
+      fi
+      harness_trace_generate "$1"
+      ;;
+    verify)
+      if [[ $# -lt 1 ]]; then
+        echo "Usage: harness trace verify <session_id>" >&2
+        exit 1
+      fi
+      harness_trace_verify "$1"
+      ;;
+    help|*)
+      cat <<TRACEEOF
+Usage:
+  harness trace generate <session_id>   Record session.trace_file (skill writes content)
+  harness trace verify <session_id>     Verify trace verdict is PASS
+  harness trace help                    Show this message
+TRACEEOF
+      ;;
+  esac
+}
+
+cmd_eval() {
+  # Karpathy loop dispatcher. Delegates to lib/karpathy/runner.py via module mode.
+  # Per feedback_harness_lib_must_launch_via_module_mode memory.
+  if [[ "${1:-}" == "help" || "${1:-}" == "--help" || -z "${1:-}" ]]; then
+    cat <<EVALEOF
+Usage:
+  harness eval <metric-file-path> [options]
+
+Supervised-autonomous experiment runner over a committed metric file.
+Implements the Karpathy loop spec at docs/superpowers/specs/2026-05-15-karpathy-loop-design.md.
+
+Options:
+  --budget-input-tokens N    Per-experiment input token budget (default 200000)
+  --budget-output-tokens N   Per-experiment output token budget (default 100000)
+  --wall-clock-seconds N     Per-experiment wall-clock budget in seconds (default 1800)
+  --max-experiments N        Maximum experiments per run (default 20)
+  --worktree-dir PATH        Base directory for experiment worktrees
+                             (default /tmp/harness-karpathy/<run_id>/)
+
+Each experiment:
+  1. Creates a worktree on a fresh karpathy/exp-<id> branch
+  2. Dispatches a claude -p subagent with the metric + skill
+  3. Evaluates the metric's Check 1 + Check 2 mechanically
+  4. Writes a trace; records verdict
+  5. Cleans up the worktree
+
+Loop stops on (whichever fires first):
+  - target_met: an experiment verdict is PASS
+  - max_experiments_reached
+  - cumulative_budget_exhausted (wall-clock or token aggregate)
+  - 5_consecutive_failures
+  - operator_interrupt (SIGTERM/SIGINT)
+
+Per-run summary written to .harness/karpathy/<run_id>/summary.json.
+EVALEOF
+    return 0
+  fi
+  exec env PYTHONPATH="$SCRIPT_DIR" python3 -m lib.karpathy.runner "$@"
 }
 
 # Route subcommand
@@ -1340,6 +1571,7 @@ case "${1:-status}" in
   config)     shift 2>/dev/null || true; cmd_config "$@" ;;
   deploy)     shift 2>/dev/null || true; cmd_deploy "$@" ;;
   agent)      shift 2>/dev/null || true; cmd_agent "$@" ;;
+  canary)     shift 2>/dev/null || true; cmd_canary "$@" ;;
   cron)       shift 2>/dev/null || true; cmd_cron "$@" ;;
   channel)    shift 2>/dev/null || true; cmd_channel "$@" ;;
   inbox)      shift 2>/dev/null || true; cmd_inbox "$@" ;;
@@ -1351,7 +1583,11 @@ case "${1:-status}" in
   dispatch)   shift 2>/dev/null || true; cmd_dispatch "$@" ;;
   desk)       shift 2>/dev/null || true; cmd_desk "$@" ;;
   dashboard)  shift 2>/dev/null || true; cmd_dashboard "$@" ;;
+  tenant)     shift 2>/dev/null || true; cmd_tenant "$@" ;;
   tools)      shift 2>/dev/null || true; cmd_tools "$@" ;;
+  metric)     shift 2>/dev/null || true; cmd_metric "$@" ;;
+  trace)      shift 2>/dev/null || true; cmd_trace "$@" ;;
+  eval)       shift 2>/dev/null || true; cmd_eval "$@" ;;
   help)       cmd_help ;;
   *)          echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac
