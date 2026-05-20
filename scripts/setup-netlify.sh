@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Push env vars + deploy this tenant to Netlify. Direct replacement for
-# setup-vercel.sh after the 2026-04-19 Vercel breach (see
-# memory/project_vercel_breach_2026_04_19.md).
+# Push env vars + deploy this tenant to Netlify. The canonical tenant
+# setup script. ProppyAI tenants run on Netlify only — there is no
+# fallback platform. (Historical context: this script was created in
+# 2026-04 to replace the prior Vercel-based setup after a security
+# incident; the migration is permanent.) allowlist: vercel-historical
 #
 # Reads .env.production, generates any GENERATED-marked secrets, and runs
 # `netlify env:set` for each key. Idempotent — existing env vars are
@@ -11,8 +13,7 @@
 #   - netlify CLI installed (npm i -g netlify-cli)
 #   - netlify login (one-time, browser)
 #   - netlify link inside HARNESS/client-app to this tenant's site
-#   - .env.production populated from .env.production.template (with ROTATED
-#     values, not the pre-breach Vercel values)
+#   - .env.production populated from .env.production.template
 #
 # Usage:
 #   bash scripts/setup-netlify.sh
@@ -145,4 +146,3 @@ echo "  2. Add tylerelec.proppyai.io as a custom domain in the Netlify dashboard
 echo "  3. Swap Squarespace DNS: tylerelec CNAME to <site>.netlify.app (or A record to apex-loadbalancer.netlify.com)."
 echo "  4. After DNS propagates, re-run scripts/configure-supabase-auth.sh (Supabase allowlist unchanged but worth re-verifying)."
 echo "  5. Re-run scripts/register-telegram-webhook.sh (Telegram setWebhook with new secret if TELEGRAM_WEBHOOK_SECRET rotated)."
-echo "  6. Delete the old Vercel project: vercel project rm tyler-electric"

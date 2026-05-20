@@ -2,10 +2,10 @@
 # Register this tenant's Telegram bot webhook.
 # Hits the client-app's /api/telegram/setup endpoint, which is gated by
 # TELEGRAM_SETUP_SECRET and internally calls Telegram setWebhook with the
-# per-tenant bot token + webhook secret already in Vercel env.
+# per-tenant bot token + webhook secret already in the Netlify site's env.
 #
 # Reads NEXT_PUBLIC_APP_URL + TELEGRAM_SETUP_SECRET from .env.production.
-# No bot token leaves the Vercel environment — we just authorize the
+# No bot token leaves the Netlify environment — we just authorize the
 # deployed endpoint to do it server-side.
 #
 # Usage:
@@ -27,7 +27,7 @@ SETUP_SECRET=$(grep -E '^TELEGRAM_SETUP_SECRET=' "$ENV_FILE" | head -1 | cut -d=
 
 if [[ -z "$APP_URL" || -z "$SETUP_SECRET" || "$SETUP_SECRET" == "GENERATED" ]]; then
   echo "ERROR: NEXT_PUBLIC_APP_URL or TELEGRAM_SETUP_SECRET missing/placeholder."
-  echo "Has scripts/setup-vercel.sh been run? That fills in TELEGRAM_SETUP_SECRET."
+  echo "Has scripts/setup-netlify.sh been run? That fills in TELEGRAM_SETUP_SECRET."
   exit 1
 fi
 
@@ -51,4 +51,4 @@ echo "$response" | python3 -m json.tool 2>/dev/null || echo "$response"
 echo ""
 echo "Verify via Telegram getWebhookInfo:"
 echo "  curl -s \"https://api.telegram.org/bot\$TELEGRAM_BOT_TOKEN/getWebhookInfo\" | python3 -m json.tool"
-echo "(bot token is only in Vercel env; run this with the token if you need the verification)"
+echo "(bot token is only in Netlify env; run this with the token if you need the verification)"

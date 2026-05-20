@@ -26,9 +26,9 @@ SUBDOMAIN=$(python3 -c "import json; print(json.load(open('$REPO_ROOT/harness.js
 SITE_URL="https://${SUBDOMAIN}"
 
 # Allowlist covers the callback route on both the custom domain and the
-# vercel.app alias (useful for preview/debug). Wildcards allowed per
+# netlify.app alias (useful for preview/debug). Wildcards allowed per
 # Supabase docs.
-export URI_ALLOW_LIST="${SITE_URL}/auth/callback,${SITE_URL}/**,https://*.vercel.app/auth/callback"
+export URI_ALLOW_LIST="${SITE_URL}/auth/callback,${SITE_URL}/**,https://*.netlify.app/auth/callback"
 export SITE_URL
 
 # Sanity-check the PAT format before we call the API. The Management API takes

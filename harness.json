@@ -6,15 +6,24 @@
     "subdomain": "tylerelec.proppyai.io",
     "supabase_project_ref": "ytautaibfstbehessxvp",
     "supabase_region": "us-west-2",
-    "vercel_project": "tyler-electric",
     "qbo_environment": "production",
-    "dashboard_users": ["tyler"]
+    "dashboard_users": [
+      "tyler"
+    ]
   },
   "channels": {
-    "rc": { "enabled": false },
-    "discord": { "enabled": false },
-    "slack": { "enabled": false },
-    "imessage": { "enabled": false },
+    "rc": {
+      "enabled": false
+    },
+    "discord": {
+      "enabled": false
+    },
+    "slack": {
+      "enabled": false
+    },
+    "imessage": {
+      "enabled": false
+    },
     "telegram": {
       "enabled": true,
       "bot_token_env": "TELEGRAM_BOT_TOKEN",
