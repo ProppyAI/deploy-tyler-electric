@@ -26,6 +26,7 @@
     },
     "telegram": {
       "enabled": true,
+      "bot_username": "@tylerelec_bot",
       "bot_token_env": "TELEGRAM_BOT_TOKEN",
       "webhook_secret_env": "TELEGRAM_WEBHOOK_SECRET",
       "allowed_user_ids_env": "TELEGRAM_ALLOWED_USER_IDS"
