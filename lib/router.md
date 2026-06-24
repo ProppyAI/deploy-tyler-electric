@@ -30,7 +30,7 @@ When `intent == "feature"`, the classifier also emits `subcategory` (see `lib/cl
 7. `superpowers:writing-plans`
 8. `superpowers:test-driven-development` (real-data — contract + fixture tests, per `feedback_always_superpowers_and_real_data_tdd`)
 9. `superpowers:executing-plans`
-10. `everything-claude-code:e2e` (Playwright against G2 preview URL)
+10. `ecc:e2e` (Playwright against G2 preview URL)
 11. `superpowers:verification-before-completion`
 12. `superpowers:requesting-code-review`
 13. `harness:trace-audit`  (writes per-session evidence trace; verdict PASS required)

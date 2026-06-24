@@ -512,15 +512,15 @@ if command -v claude &>/dev/null; then
     echo "     Superpowers already installed"
   fi
 
-  echo "  -> Checking Everything Claude Code plugin..."
-  if ! claude plugin list 2>/dev/null | grep -qw "everything-claude-code"; then
-    echo "     Installing Everything Claude Code..."
-    claude plugin install everything-claude-code || {
-      echo "WARNING: Failed to install Everything Claude Code plugin."
+  echo "  -> Checking ECC (Everything Claude Code) plugin..."
+  if ! claude plugin list 2>/dev/null | grep -qw "ecc"; then
+    echo "     Installing ECC..."
+    claude plugin install ecc@everything-claude-code || {
+      echo "WARNING: Failed to install ECC plugin."
       ECC_OK=false
     }
   else
-    echo "     Everything Claude Code already installed"
+    echo "     ECC already installed"
   fi
 else
   echo ""
@@ -568,5 +568,5 @@ if [[ "$SUPERPOWERS_OK" != "true" || "$ECC_OK" != "true" ]]; then
   echo "IMPORTANT: Required plugins were not installed. The orchestrator needs them."
   echo "Run these commands to complete setup:"
   [[ "$SUPERPOWERS_OK" != "true" ]] && echo "  claude plugin install superpowers"
-  [[ "$ECC_OK" != "true" ]] && echo "  claude plugin install everything-claude-code"
+  [[ "$ECC_OK" != "true" ]] && echo "  claude plugin install ecc@everything-claude-code"
 fi

@@ -1319,10 +1319,15 @@ Usage:
   harness dispatch [--once|--watch]
   harness desk <list|update|help>
   harness dashboard [--client name] [--open]
-  harness tenant <probe|help>
+  harness tenant <probe|sql|logs|outbox|help>
+  harness permit list|enumerate|crawl|show|diff|verify ...   # permit discovery KB
   harness tools <tool-name> [args]
   harness metric <draft|approve|reject|verify> <session_id>
   harness trace <generate|verify> <session_id>
+  harness uat <record|help>
+  harness branch <intent> <slug> [--stage S] [--request T] [--from BASE]
+  harness worktree <add|list|rm|help>
+  harness audit [--remote]
   harness help
 
 Commands:
@@ -1346,10 +1351,15 @@ Commands:
   dispatch    Process inbox messages (route to tools or service desk)
   desk        Service desk — managed queue for setup change requests
   dashboard   Generate client-facing HTML business dashboard
-  tenant      Tenant probes — verify live deployment state
+  tenant      Tenant probes + live inspection (probe/sql/logs/outbox)
   tools       Run module tools directly (create-client, create-invoice, etc.)
   metric      Draft/approve/reject/verify per-session success metric
   trace       Generate/verify per-session evidence trace
+  uat         Append UAT outcomes to .personal/uat/<date>-pr-<N>.md
+  branch      Atomic: cut harness/<intent>/<slug> + register session
+  worktree    Parallel-feature worktrees (isolated git index) + register session
+  autopilot   Autonomous-run forensics: doctor (PASS/STALLED/DEAD) + watch
+  audit       List harness/* branches without registered session records
   help        Show this message
 
 Session Directory: $SESSIONS_DIR
@@ -1400,26 +1410,164 @@ cmd_tenant() {
       exec env PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}" \
         python3 -m lib.tenant_probe "$@"
       ;;
+    sql)
+      # shellcheck source=../lib/tenant_sql.sh
+      source "$SCRIPT_DIR/lib/tenant_sql.sh"
+      tenant_sql_main "$@"
+      ;;
+    logs)
+      # shellcheck source=../lib/tenant_logs.sh
+      source "$SCRIPT_DIR/lib/tenant_logs.sh"
+      tenant_logs_main "$@"
+      ;;
+    outbox)
+      # shellcheck source=../lib/tenant_outbox.sh
+      source "$SCRIPT_DIR/lib/tenant_outbox.sh"
+      tenant_outbox_main "$@"
+      ;;
+    qbo-replay)
+      # shellcheck source=../lib/tenant_qbo_replay.sh
+      source "$SCRIPT_DIR/lib/tenant_qbo_replay.sh"
+      tenant_qbo_replay_main "$@"
+      ;;
+    qbo-get)
+      # shellcheck source=../lib/tenant_qbo_read.sh
+      source "$SCRIPT_DIR/lib/tenant_qbo_read.sh"
+      tenant_qbo_get_main "$@"
+      ;;
+    qbo-query)
+      # shellcheck source=../lib/tenant_qbo_read.sh
+      source "$SCRIPT_DIR/lib/tenant_qbo_read.sh"
+      tenant_qbo_query_main "$@"
+      ;;
+    tg-login)
+      # shellcheck source=../lib/tenant_telegram.sh
+      source "$SCRIPT_DIR/lib/tenant_telegram.sh"
+      tenant_tg_login_main "$@"
+      ;;
+    tg-send)
+      # shellcheck source=../lib/tenant_telegram.sh
+      source "$SCRIPT_DIR/lib/tenant_telegram.sh"
+      tenant_tg_send_main "$@"
+      ;;
+    tg-read)
+      # shellcheck source=../lib/tenant_telegram.sh
+      source "$SCRIPT_DIR/lib/tenant_telegram.sh"
+      tenant_tg_read_main "$@"
+      ;;
+    tg-dialogs)
+      # shellcheck source=../lib/tenant_telegram.sh
+      source "$SCRIPT_DIR/lib/tenant_telegram.sh"
+      tenant_tg_dialogs_main "$@"
+      ;;
+    bid-replay)
+      # shellcheck source=../lib/tenant_bid_replay.sh
+      source "$SCRIPT_DIR/lib/tenant_bid_replay.sh"
+      tenant_bid_replay_main "$@"
+      ;;
     help|"")
       cat <<TENANTEOF
 HARNESS — tenant commands
 
+Live inspection of a deployed tenant. Operator credentials come from
+~/.harness/operator.env (SUPABASE_MANAGEMENT_PAT); per-tenant Supabase
+project ref + Netlify site link are read from the deploy-<slug>
+repo and HARNESS/client-app/.netlify/state.json respectively. Nothing
+is ever logged or echoed to stdout.
+
 Usage:
-  harness tenant probe <client>             # run all probes, table output
+  harness tenant probe <client>                          # live probe orchestration
   harness tenant probe <client> --json
   harness tenant probe <client> --only <names>
   harness tenant probe <client> --skip <names>
   harness tenant probe <client> --describe
   harness tenant probe --list
 
-Verifies live tenant deployment state. Reads tenant credentials from
-the deploy repo's .env.production and operator credentials from
-~/.harness/operator.env. Both are scoped to the runner process and
-never logged or printed.
+  harness tenant sql <client> "<query>" [--json|--table|--csv]
+                                                         # ad-hoc SQL via Supabase Management API
+                                                         # default: pretty JSON
+
+  harness tenant logs <client> [--since DURATION]        # default: 30m
+                              [--function NAME]          # restrict to single function
+                              [--filter REGEX]           # post-collect grep -E
+                              [--around TIMESTAMP]       # ISO-8601 ±2min window
+
+  harness tenant outbox <client> [--failed|--pending|--all]   # default: --all
+                                [--since DURATION]            # default: 24h
+                                [--entity NAME]               # customer|estimate|invoice|...
+                                [--limit N]                   # default: 20, max 1000
+                                [--json|--table|--csv]        # default: --table
+
+  harness tenant qbo-replay <client> <outbox_row_id> [--apply]
+                                                         # dry-run by default; --apply
+                                                         # resets row + retriggers QBO
+
+  harness tenant qbo-get   <client> <entity> <id>       # fetch single QBO entity by id
+  harness tenant qbo-query <client> <entity> "<where-clause>"
+                                                         # run a read-only QBO query
+
+  harness tenant tg-login                                # one-time: Telethon login as your
+                                                         # account; writes API_ID/API_HASH/
+                                                         # SESSION_STRING to ~/.harness/operator.env
+                                                         # (run as: ! harness tenant tg-login)
+  harness tenant tg-send <client> "<text>" [--dry-run]   # send a REAL message to the tenant bot
+  harness tenant tg-read <client> [--since ID]           # poll for new bot replies
+                              [--wait S] [--quiet S]      # --wait default 540, --quiet default 3
+  harness tenant tg-dialogs                               # list bot chats (for setup)
+
+  harness tenant bid-replay <client> <fixture.json>      # exhaustive bid replay UAT: replays a
+                            [--dry-run] [--cleanup]       # captured conversation against the
+                            [--no-assert]                 # deployed bot + asserts up to QBO
+                                                         # (one correct non-taxable estimate,
+                                                         # no dup customer). Regression guard
+                                                         # for the bid-loop dead-end fix.
+
+See: lib/tenant_*.sh for the implementations.
 TENANTEOF
       ;;
     *)
       echo "Unknown tenant subcommand: $subcmd" >&2
+      echo "Run 'harness tenant help' for the verb list." >&2
+      exit 2
+      ;;
+  esac
+}
+
+cmd_uat() {
+  local subcmd="${1:-help}"
+  shift 2>/dev/null || true
+
+  case "$subcmd" in
+    record)
+      # shellcheck source=../lib/uat.sh
+      source "$SCRIPT_DIR/lib/uat.sh"
+      uat_record_main "$@"
+      ;;
+    help|"")
+      cat <<UATEOF
+HARNESS — UAT record commands
+
+Append per-PR UAT outcomes to .personal/uat/<YYYY-MM-DD>-pr-<#>.md so
+post-merge dogfooding leaves a durable audit trail across context resets.
+
+Usage:
+  harness uat record --pr <PR#> --category <name> --driver <agent|operator> --observed "<quote>"
+                                                       # append a step entry
+  harness uat record --pr <PR#> --show                 # print audit log(s)
+  harness uat help                                     # this help
+
+Override write location with UAT_DIR env var (used by tests).
+
+See docs/superpowers/specs/2026-05-27-uat-record-tooling-design.md for
+the workflow this enforces. The pre-push hook's autoloop watcher fires
+\`harness uat record\` on the agent's behalf for server-side steps; the
+operator's Telegram/UI observations are recorded via the agent on the
+operator's behalf.
+UATEOF
+      ;;
+    *)
+      printf "unknown uat subcommand: %s\n" "$subcmd" >&2
+      printf "run 'harness uat help' for the verb list.\n" >&2
       exit 2
       ;;
   esac
@@ -1520,6 +1668,679 @@ TRACEEOF
   esac
 }
 
+cmd_branch() {
+  # Atomic checkout + session-register. Replaces the two-step
+  #   `git checkout -b harness/<intent>/<slug>` + manual harness_register
+  # pattern that PRs #140-#144 split (and dropped the second step on).
+  #
+  # Usage: harness branch <intent> <slug> [--stage STAGE] [--request "TEXT"] [--from BASE]
+  local intent="${1:-}"
+  local slug="${2:-}"
+  if [[ -z "$intent" || -z "$slug" ]]; then
+    cat <<EOF
+Usage: harness branch <intent> <slug> [--stage STAGE] [--request TEXT] [--from BASE]
+
+  intent     One of: bug, feature, refactor, chore.
+  slug       Kebab-case branch suffix (e.g. tenant-inspection-cli).
+
+Options:
+  --stage    Initial session stage (default: planning).
+  --request  One-line description of the work (default: derived from slug).
+  --from     Base branch to cut from (default: dev).
+
+Example:
+  harness branch bug fix-double-confirm --request "convert-flow cap-hit + double-confirm"
+EOF
+    exit 1
+  fi
+  shift 2
+  local stage="planning" request="" base="dev"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --stage)   stage="${2:?--stage requires a value}"; shift 2 ;;
+      --request) request="${2:?--request requires a value}"; shift 2 ;;
+      --from)    base="${2:?--from requires a value}"; shift 2 ;;
+      *) echo "Unknown flag: $1" >&2; exit 1 ;;
+    esac
+  done
+  case "$intent" in
+    bug|feature|refactor|chore) ;;
+    *) echo "ERROR: intent must be one of: bug, feature, refactor, chore" >&2; exit 1 ;;
+  esac
+  if [[ ! "$slug" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    echo "ERROR: slug must be kebab-case ([a-z0-9][a-z0-9-]*)" >&2
+    exit 1
+  fi
+  [[ -z "$request" ]] && request="$intent: $slug"
+  local branch="harness/$intent/$slug"
+  if git show-ref --quiet "refs/heads/$branch"; then
+    echo "ERROR: branch $branch already exists" >&2; exit 1
+  fi
+  echo "Checking out $branch off $base ..."
+  if ! git checkout -b "$branch" "$base" 2>&1; then
+    echo "ERROR: checkout failed (is $base a valid base?)" >&2; exit 1
+  fi
+  source "$SCRIPT_DIR/lib/session.sh"
+  local sid register_err
+  if ! sid=$(harness_register "$stage" "" local "$intent" "$request" 2>&1); then
+    register_err="$sid"
+    echo "ERROR: session registration failed — rolling back branch $branch" >&2
+    echo "$register_err" >&2
+    git checkout - >/dev/null 2>&1 || true
+    git branch -D "$branch" >/dev/null 2>&1 || true
+    echo "  Retry with: harness branch $intent $slug" >&2
+    exit 1
+  fi
+  echo
+  echo "Branch:     $branch"
+  echo "Session:    $sid"
+  echo "Stage:      $stage"
+  echo "Intent:     $intent"
+  echo "Request:    $request"
+  echo
+  echo "Next: implement → commit → push. The pre-push hook will accept the push"
+  echo "because $sid is registered against branch=$branch."
+}
+
+cmd_audit() {
+  # List harness/* branches (local + remote) without a matching session record.
+  # Informational; exit 0 always.
+  local include_remote=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --remote) include_remote=1; shift ;;
+      help|-h|--help)
+        cat <<EOF
+Usage: harness audit [--remote]
+
+Lists harness/* branches without a registered .harness/sessions/<id>.json
+record (the audit trail required by the pre-push session-presence gate).
+
+  (default)  Checks local branches only.
+  --remote   Also checks remote branches via 'git ls-remote --heads'.
+
+Exit code is always 0. Use this for periodic discipline checks; the
+pre-push hook is the enforcement layer.
+EOF
+        return 0 ;;
+      *) echo "Unknown flag: $1" >&2; exit 1 ;;
+    esac
+  done
+  if [[ ! -d "$SESSIONS_DIR" ]]; then
+    echo "(no .harness/sessions/ — not a HARNESS-style repo? nothing to audit)"
+    return 0
+  fi
+
+  # Build set of branches that DO have a session record
+  local registered_branches
+  registered_branches=$(python3 - "$SESSIONS_DIR" <<'PY'
+import json, os, sys
+seen = set()
+for f in os.listdir(sys.argv[1]):
+    if not f.endswith('.json'):
+        continue
+    try:
+        d = json.load(open(os.path.join(sys.argv[1], f)))
+        b = d.get('branch')
+        if b:
+            seen.add(b)
+    except Exception:
+        pass
+print('\n'.join(sorted(seen)))
+PY
+)
+
+  # Collect candidate branches. `git for-each-ref` glob `*` does NOT match `/`
+  # so we list all refs under refs/heads/ and grep for the harness/ prefix —
+  # captures both shallow (harness/foo) and nested (harness/bug/foo) variants.
+  local local_branches
+  local_branches=$(git for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null | grep '^harness/' || true)
+  local remote_branches=""
+  if (( include_remote )); then
+    remote_branches=$(git ls-remote --heads origin 2>/dev/null | awk '{sub(/refs\/heads\//, "", $2); print $2}' | grep '^harness/' || true)
+  fi
+  local all_branches
+  all_branches=$(printf '%s\n%s\n' "$local_branches" "$remote_branches" | sort -u | sed '/^$/d')
+
+  local total=0 missing=0
+  while IFS= read -r b; do
+    [[ -z "$b" ]] && continue
+    total=$((total + 1))
+    if grep -qxF "$b" <<<"$registered_branches"; then
+      printf '  %b✓%b  %s\n' "${GREEN}" "${RESET}" "$b"
+    else
+      printf '  %b✗%b  %s  %b(no session record)%b\n' "${RED}" "${RESET}" "$b" "${DIM}" "${RESET}"
+      missing=$((missing + 1))
+    fi
+  done <<<"$all_branches"
+
+  echo
+  if (( missing > 0 )); then
+    printf '%bAudit: %d branch(es) missing session records (out of %d total).%b\n' "${YELLOW}" "$missing" "$total" "${RESET}"
+    echo "Fix: source lib/session.sh && harness_register ... on the affected branches before next push."
+  else
+    printf '%bAudit: all %d harness/* branches have session records.%b\n' "${GREEN}" "$total" "${RESET}"
+  fi
+}
+
+# ── worktree helpers (factored so tests can exercise them in isolation) ──────
+
+# Validate intent ∈ bug|feature|refactor|chore (same set cmd_branch enforces).
+_wt_validate_intent() {
+  case "${1:-}" in
+    bug|feature|refactor|chore) return 0 ;;
+    *) echo "ERROR: intent must be one of: bug, feature, refactor, chore" >&2; return 1 ;;
+  esac
+}
+
+# Validate slug is kebab-case (same regex cmd_branch enforces).
+_wt_validate_slug() {
+  if [[ "${1:-}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+    return 0
+  fi
+  echo "ERROR: slug must be kebab-case ([a-z0-9][a-z0-9-]*)" >&2
+  return 1
+}
+
+# Ensure `.worktrees/` is gitignored at the repo root. Idempotent: only appends
+# if `git check-ignore` does not already cover it. Operates on $PWD's repo.
+_wt_ensure_gitignore() {
+  if git check-ignore -q .worktrees 2>/dev/null; then
+    return 0
+  fi
+  local root gi
+  root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+  gi="$root/.gitignore"
+  # Guard against a literal `.worktrees/` line already present but not yet
+  # effective (e.g. uncommitted) — never double-add.
+  if [[ -f "$gi" ]] && grep -qxF '.worktrees/' "$gi"; then
+    return 0
+  fi
+  {
+    printf '\n# HARNESS parallel-feature worktrees (per-feature isolated git index)\n'
+    printf '.worktrees/\n'
+  } >> "$gi"
+  echo "Note: added '.worktrees/' to $gi (it was not previously ignored)."
+}
+
+cmd_autopilot() {
+  local sub="${1:-help}"; shift 2>/dev/null || true
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/lib/autopilot-doctor.sh"
+  case "$sub" in
+    doctor)   _cmd_autopilot_doctor   "$@" ;;
+    watch)    _cmd_autopilot_watch    "$@" ;;
+    autonomy) _cmd_autopilot_autonomy "$@" ;;
+    help|*) cat <<'EOF'
+harness autopilot doctor [<pr>]   Forensic snapshot of headless autopilot/review
+                                  runs -> PASS|STALLED|DEAD|NONE. --reap removes
+                                  stale locks for dead autopilot/review runs.
+harness autopilot watch  <pr>     Stall-watchdog: poll CPU-time; alert if flat.
+harness autopilot autonomy ...    Earned-autonomy gate: per-action tier/streak
+                                  table, is-autonomous gate, ledger record/verify,
+                                  operator veto, history-seed proposal.
+EOF
+      ;;
+  esac
+}
+
+# Thin wrapper over lib/autopilot_ledger.py. The ledger lives per-repo under
+# .harness/autopilot/ledger; `status`/`is-autonomous` wire the repo's live
+# .harness/sessions dir so the branch-matched session gate is enforced in
+# production (a clean approval only earns streak credit if it resolves to a
+# real, branch-matched operator session record).
+_cmd_autopilot_autonomy() {
+  local sub="${1:-status}"; shift 2>/dev/null || true
+  local repo_root ledger_dir sessions_dir py
+  repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  ledger_dir="$repo_root/.harness/autopilot/ledger"
+  sessions_dir="$repo_root/.harness/sessions"
+  py="$SCRIPT_DIR/lib/autopilot_ledger.py"
+  case "$sub" in
+    status)        python3 "$py" status "$ledger_dir" "$sessions_dir" ;;
+    is-autonomous) # FIX F: guard empty action (silently passing "" → classify("")=T3 → "no" is wrong UX)
+                   [[ -z "${1:-}" ]] && { echo "error: is-autonomous requires <action>" >&2; return 2; }
+                   python3 "$py" is-autonomous-sess "$ledger_dir" "${1:-}" "$sessions_dir" ;;
+    record)        # record <action> <decision> <outcome> <session> [source] [pr]
+                   # [source] defaults to "agent" (least-privileged). Operator
+                   # attribution requires explicitly passing "operator" as the
+                   # 5th positional argument — omitting it earns NO streak credit.
+                   # append captures the current git branch by default (cwd is the
+                   # repo here, so it resolves correctly for the C2 session gate).
+                   python3 "$py" append "$ledger_dir" "$@" ;;
+    veto|demote|unveto) python3 "$py" "$sub" "${1:-}" ;;
+    verify)        python3 "$py" verify "$ledger_dir" ;;
+    seed)          python3 "$py" seed "$ledger_dir" --root "$repo_root" "$@" ;;
+    *) cat <<'EOF'
+harness autopilot autonomy status                 Per-action tier/streak/auto table
+harness autopilot autonomy is-autonomous <action> yes|no for the driver gate
+harness autopilot autonomy record <action> <decision> <outcome> <session> [source] [pr]
+  [source] defaults to "agent"; pass "operator" explicitly for operator streak credit
+harness autopilot autonomy veto|demote|unveto <action>   Operator-owned veto list
+harness autopilot autonomy verify                 Ledger integrity (OK|TAMPERED)
+harness autopilot autonomy seed [--approve]       History-seed proposal / ratify
+EOF
+      ;;
+  esac
+}
+
+# Gather process/lock/log facts and classify. Read-only unless --reap.
+_cmd_autopilot_doctor() {
+  local pr="" reap=0 a
+  for a in "$@"; do
+    case "$a" in
+      --reap) reap=1 ;;
+      *) pr="$a" ;;
+    esac
+  done
+  # pr (when given) must be a bare PR number — it flows into glob patterns and a
+  # `rm -rf` path under --reap. Reject anything non-numeric. Empty = "any run".
+  if [ -n "$pr" ]; then
+    case "$pr" in *[!0-9]*) echo "error: pr must be a number (got: $pr)" >&2; return 2 ;; esac
+  fi
+  local lock_root="$HOME/.claude/pr-review-autoloop/locks"
+  local log_dir="$HOME/.claude/autopilot/logs"
+  local pids="" cmd pid alive=0 lock_present=0 stalled="progressing"
+  # `read -r pid cmd` coalesces the ps pid column's leading padding: first token
+  # -> pid, remainder -> cmd. Avoids the cut -d' ' leak of pid padding into cmd.
+  while read -r pid cmd; do
+    [ "$pid" = "$$" ] && continue
+    if [ "$(_autopilot_proc_is_autopilot "$cmd")" = "yes" ]; then
+      pids="$pids $pid"
+    fi
+  done < <(ps -axo pid=,command= 2>/dev/null)
+
+  if [ -n "$pr" ]; then
+    ls -d "$lock_root"/*-"$pr" >/dev/null 2>&1 && lock_present=1
+  else
+    [ -n "$(ls -A "$lock_root" 2>/dev/null || true)" ] && lock_present=1
+  fi
+
+  if [ -n "${pids// /}" ]; then
+    alive=1
+    local p1 t1 t2
+    # Sample only the first matched pid: this snapshot reflects one run at a time
+    # (the headless dispatch holds a single-flight lock, so >1 is not expected).
+    p1="$(printf '%s' "$pids" | awk '{print $1}')"
+    t1="$(_autopilot_cputime_secs "$(ps -o time= -p "$p1" 2>/dev/null | tr -d ' ')")"
+    sleep 3
+    t2="$(_autopilot_cputime_secs "$(ps -o time= -p "$p1" 2>/dev/null | tr -d ' ')")"
+    stalled="$(_autopilot_is_stalled "$t1" "$t2" 1)"
+  fi
+
+  local verdict; verdict="$(_autopilot_classify_verdict "$lock_present" "$alive" "$stalled")"
+  printf 'AUTOPILOT DOCTOR\n  pr:       %s\n  pids:     %s\n  lock:     %s\n  verdict:  %s\n' \
+    "${pr:-<any>}" "${pids:-<none>}" "$([ "$lock_present" = 1 ] && echo present || echo absent)" "$verdict"
+  if [ -d "$log_dir" ]; then
+    printf '  log tail (%s):\n' "$log_dir"
+    # Anchor to the exact per-PR log (logs are named pr-<N>.jsonl). A wildcard
+    # *"$pr"* would over-match (pr=1 -> pr-10, pr-21, ...) and leak unrelated
+    # runs' tool_result content to the terminal. Empty pr -> every run's log.
+    if [ -n "$pr" ]; then
+      tail -n 5 "$log_dir/pr-$pr.jsonl" 2>/dev/null | sed 's/^/    /' || true
+    else
+      tail -n 5 "$log_dir"/*.jsonl 2>/dev/null | sed 's/^/    /' || true
+    fi
+  fi
+
+  if [ "$reap" = "1" ] && [ "$verdict" = "DEAD" ]; then
+    printf '  reaping stale locks...\n'
+    if [ -n "$pr" ]; then
+      rm -rf "$lock_root"/*-"$pr" 2>/dev/null || true
+    else
+      # No PR scope: never blanket `rm -rf "$lock_root"/*` — that would wipe the
+      # locks of OTHER in-flight runs across every repo on this machine. Instead
+      # check each lock dir's own recorded pid and remove only the ones whose
+      # holder is no longer alive (a per-lock liveness check, not one collapsed
+      # verdict). A dir with no/garbage pid file is treated as stale.
+      local d lp
+      for d in "$lock_root"/*; do
+        [ -d "$d" ] || continue
+        lp="$(cat "$d/pid" 2>/dev/null || true)"
+        # Validate the pid is a bare positive integer BEFORE `kill -0`. A
+        # missing/empty/non-numeric value is stale -> reap. This guard is
+        # load-bearing: an unvalidated "0"/"-1" passed to `kill -0` would
+        # signal a whole process group and read back as "holder alive",
+        # silently skipping a genuinely dead lock (the opposite of reaping).
+        case "$lp" in
+          ''|*[!0-9]*) rm -rf "$d" 2>/dev/null || true; continue ;;
+        esac
+        if ! kill -0 "$lp" 2>/dev/null; then
+          rm -rf "$d" 2>/dev/null || true
+        fi
+      done
+    fi
+  fi
+  printf '%s\n' "$verdict"
+}
+
+# Poll a headless run's CPU-time; alert if flat for STALL_MINUTES. Exits 0 when
+# the run finishes (pid gone), 3 when it stalls. Reads the doctor helpers.
+_cmd_autopilot_watch() {
+  local pr="${1:-}"
+  [ -z "$pr" ] && { echo "Usage: harness autopilot watch <pr>" >&2; return 2; }
+  case "$pr" in *[!0-9]*) echo "error: pr must be a number (got: $pr)" >&2; return 2 ;; esac
+  local stall_minutes="${AUTOPILOT_STALL_MINUTES:-10}"
+  local poll="${AUTOPILOT_WATCH_POLL:-60}"
+  # Both feed `$(( ))` arithmetic contexts below; an unvalidated value like
+  # `a[0$(cmd)]` would execute `cmd` (bash arithmetic recursion). Require bare
+  # positive integers before any arithmetic touches them.
+  case "$stall_minutes" in ''|*[!0-9]*) echo "error: AUTOPILOT_STALL_MINUTES must be a positive integer" >&2; return 2 ;; esac
+  case "$poll" in ''|*[!0-9]*) echo "error: AUTOPILOT_WATCH_POLL must be a positive integer" >&2; return 2 ;; esac
+  local flat_secs=0 prev=-1 cur p cmd pid=""
+  while :; do
+    pid=""
+    # `read -r p cmd` coalesces the ps pid column's leading padding (first token
+    # -> p, remainder -> cmd). Match the /pr-review loop (argv carries
+    # `/pr-review <pr> --auto-merge`) AND a future autopilot-proper dispatch
+    # tagged HARNESS_AUTOPILOT=1 carrying the same PR (Phase 1/2 command shape).
+    while read -r p cmd; do
+      case "$cmd" in
+        # Anchor the PR as a whitespace-delimited token in every branch. The bare
+        # *HARNESS_AUTOPILOT=1*"$pr"* substring would false-match (pr=5 -> "15",
+        # "50") once Phase 1 ships the HARNESS_AUTOPILOT dispatch carrying a PR.
+        *"/pr-review $pr "*|*"/pr-review $pr"|*"HARNESS_AUTOPILOT=1"*" $pr "*|*"HARNESS_AUTOPILOT=1"*" $pr") pid="$p"; break ;;
+      esac
+    done < <(ps -axo pid=,command= 2>/dev/null)
+    if [ -z "$pid" ]; then echo "watch: run for PR $pr no longer present — done"; return 0; fi
+    cur="$(_autopilot_cputime_secs "$(ps -o time= -p "$pid" 2>/dev/null | tr -d ' ')")"
+    if [ "$prev" -ge 0 ] && [ "$(_autopilot_is_stalled "$prev" "$cur" 1)" = "stalled" ]; then
+      flat_secs=$(( flat_secs + poll ))
+    else
+      flat_secs=0
+    fi
+    if [ "$flat_secs" -ge $(( stall_minutes * 60 )) ]; then
+      echo "watch: PR $pr STALLED (CPU-time flat ${flat_secs}s) — snapshot:" >&2
+      # doctor stdout -> this watcher's stderr (the alert stream); doctor's own
+      # stderr is discarded so only the clean snapshot surfaces in the alert.
+      bash "$SCRIPT_DIR/bin/harness" autopilot doctor "$pr" >&2 2>/dev/null || true
+      command -v osascript >/dev/null 2>&1 && \
+        osascript -e "display notification \"Autopilot PR $pr stalled\" with title \"HARNESS\"" 2>/dev/null || true
+      return 3
+    fi
+    prev="$cur"
+    sleep "$poll"
+  done
+}
+
+cmd_worktree() {
+  # Parallel-feature worktrees: one isolated git index per feature so two
+  # sessions never clobber a shared .git/index. See
+  # docs/superpowers/specs/2026-06-16-harness-worktree-tooling-design.md
+  local subcmd="${1:-}"
+  shift 2>/dev/null || true
+  case "$subcmd" in
+    add)  _cmd_worktree_add "$@" ;;
+    list) _cmd_worktree_list "$@" ;;
+    rm)   _cmd_worktree_rm "$@" ;;
+    help|-h|--help|"")
+      cat <<WTEOF
+Usage:
+  harness worktree add <intent> <slug> [--from BASE] [--request TEXT]
+  harness worktree list
+  harness worktree rm <slug|path> [--force]
+  harness worktree help
+
+Create an isolated git worktree (its own index) per feature so multiple
+sessions run in parallel WITHOUT shared-index corruption.
+
+  intent     One of: bug, feature, refactor, chore.
+  slug       Kebab-case ([a-z0-9][a-z0-9-]*).
+
+add options:
+  --from     Base branch to cut from (default: dev).
+  --request  One-line description of the work (default: derived from slug).
+
+rm options:
+  --force    Remove even if the worktree has uncommitted/unmerged changes.
+
+Branch:        harness/<intent>/<slug>
+Worktree path: .worktrees/<intent>-<slug>   (flat, gitignored)
+
+Example:
+  harness worktree add feature tenant-inspection --request "tenant probe CLI"
+  cd .worktrees/feature-tenant-inspection
+WTEOF
+      ;;
+    *) echo "Unknown worktree subcommand: $subcmd" >&2
+       echo "Run 'harness worktree help' for usage." >&2
+       exit 1 ;;
+  esac
+}
+
+_cmd_worktree_add() {
+  local intent="${1:-}"
+  local slug="${2:-}"
+  if [[ -z "$intent" || -z "$slug" ]]; then
+    echo "Usage: harness worktree add <intent> <slug> [--from BASE] [--request TEXT]" >&2
+    exit 1
+  fi
+  shift 2
+  local request="" base="dev"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from)    base="${2:?--from requires a value}"; shift 2 ;;
+      --request) request="${2:?--request requires a value}"; shift 2 ;;
+      *) echo "Unknown flag: $1" >&2; exit 1 ;;
+    esac
+  done
+  _wt_validate_intent "$intent" || exit 1
+  _wt_validate_slug "$slug" || exit 1
+  # Reject a --from value that looks like a git flag (e.g. --force, --detach);
+  # git would otherwise interpret it as an option rather than a base ref.
+  if [[ "$base" == -* ]]; then
+    echo "ERROR: --from value must be a branch/ref name, not a flag: $base" >&2; exit 1
+  fi
+  [[ -z "$request" ]] && request="$intent: $slug"
+  # Strip control characters from the request before it is echoed or stored.
+  request=$(printf '%s' "$request" | tr -d '\000-\037\177')
+
+  # Guard: must be inside a git repo.
+  local root
+  if ! root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    echo "ERROR: not inside a git repository (no .git)" >&2; exit 1
+  fi
+
+  local branch="harness/$intent/$slug"
+  local rel_path=".worktrees/$intent-$slug"
+  local abs_path="$root/$rel_path"
+
+  if [[ -e "$abs_path" ]]; then
+    echo "ERROR: worktree path already exists: $rel_path" >&2; exit 1
+  fi
+  if git show-ref --quiet "refs/heads/$branch"; then
+    echo "ERROR: branch $branch already exists" >&2; exit 1
+  fi
+
+  # Ensure .worktrees/ is ignored BEFORE creating it (so the new dir is never
+  # seen as untracked content in the parent worktree).
+  _wt_ensure_gitignore
+
+  echo "Creating worktree $rel_path on $branch (off $base) ..."
+  if ! git worktree add "$abs_path" -b "$branch" "$base" >/dev/null 2>&1; then
+    echo "ERROR: git worktree add failed (is $base a valid base?)" >&2; exit 1
+  fi
+
+  # Register a session INSIDE the new worktree so its .harness/sessions/ holds
+  # the record the pre-push session gate checks. Run in a subshell so the cd
+  # never leaks back to the caller's shell.
+  source "$SCRIPT_DIR/lib/session.sh"
+  local sid register_err
+  if ! sid=$(cd "$abs_path" && harness_register "executing" "" local "$intent" "$request" 2>&1); then
+    register_err="$sid"
+    echo "ERROR: session registration failed — rolling back worktree $rel_path" >&2
+    echo "$register_err" >&2
+    git worktree remove --force "$abs_path" >/dev/null 2>&1 || true
+    git branch -D "$branch" >/dev/null 2>&1 || true
+    echo "  Retry with: harness worktree add $intent $slug" >&2
+    exit 1
+  fi
+
+  echo
+  echo "Worktree:   $rel_path"
+  echo "Branch:     $branch"
+  echo "Session:    $sid"
+  echo "Request:    $request"
+  echo
+  echo "Next: cd into the worktree, implement → commit → push. The pre-push hook"
+  echo "accepts the push because $sid is registered against branch=$branch there."
+  echo "Its index is independent of the main checkout, so parallel work is safe."
+  echo
+  echo "cd $rel_path"
+}
+
+# Emit one row of `harness worktree list` output.
+# $1 = worktree path, $2 = full branch ref (e.g. refs/heads/harness/feature/foo)
+_wt_emit_row() {
+  local wt_path="$1" wt_branch="$2"
+  [[ -z "$wt_path" ]] && return 0
+  local short="${wt_branch#refs/heads/}"
+  [[ -z "$short" ]] && short="(detached)"
+  local sess="-"
+  if [[ -d "$wt_path/.harness/sessions" ]]; then
+    if _wt_has_session_for_branch "$wt_path/.harness/sessions" "$short"; then
+      sess="session ✓"
+    else
+      sess="no session"
+    fi
+  fi
+  printf '  %-50s %-32s %s\n' "$wt_path" "$short" "$sess"
+}
+
+_cmd_worktree_list() {
+  if [[ $# -gt 0 ]]; then
+    case "$1" in
+      help|-h|--help) echo "Usage: harness worktree list" ; return 0 ;;
+      *) echo "Unknown flag: $1" >&2; exit 1 ;;
+    esac
+  fi
+  if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
+    echo "ERROR: not inside a git repository (no .git)" >&2; exit 1
+  fi
+  echo "Worktrees:"
+  # Parse `git worktree list --porcelain`: records separated by blank lines,
+  # each with `worktree <path>` and (usually) `branch refs/heads/<name>`.
+  local wt_path="" wt_branch=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) wt_path="${line#worktree }" ;;
+      "branch "*)   wt_branch="${line#branch }" ;;
+      "")           _wt_emit_row "$wt_path" "$wt_branch"; wt_path=""; wt_branch="" ;;
+    esac
+  done <<EOF
+$(git worktree list --porcelain)
+EOF
+  # Emit the final record (porcelain may not end with a trailing blank line).
+  _wt_emit_row "$wt_path" "$wt_branch"
+}
+
+# True if any .json in <sessions-dir> has branch == <branch>.
+_wt_has_session_for_branch() {
+  local dir="$1" branch="$2"
+  python3 - "$dir" "$branch" <<'PY'
+import json, os, sys
+d, target = sys.argv[1], sys.argv[2]
+try:
+    files = os.listdir(d)
+except OSError:
+    sys.exit(1)
+for f in files:
+    if not f.endswith('.json'):
+        continue
+    try:
+        with open(os.path.join(d, f)) as fh:
+            if json.load(fh).get('branch') == target:
+                sys.exit(0)
+    except Exception:
+        pass
+sys.exit(1)
+PY
+}
+
+_cmd_worktree_rm() {
+  local target="${1:-}"
+  if [[ -z "$target" ]]; then
+    echo "Usage: harness worktree rm <slug|path> [--force]" >&2; exit 1
+  fi
+  shift
+  local force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      *) echo "Unknown flag: $1" >&2; exit 1 ;;
+    esac
+  done
+  # Reject glob metacharacters so a bare slug cannot expand the resolution glob
+  # below into unintended matches (a real path or slug never needs these).
+  case "$target" in
+    *'*'*|*'?'*|*'['*) echo "ERROR: invalid target (glob metacharacters not allowed): $target" >&2; exit 1 ;;
+  esac
+  local root
+  if ! root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    echo "ERROR: not inside a git repository (no .git)" >&2; exit 1
+  fi
+  # Canonicalize to a physical path so the containment comparison below is not
+  # defeated by a symlinked repo root (e.g. macOS /tmp -> /private/tmp), where
+  # an unresolved $root would never prefix-match the pwd -P resolved target.
+  root=$(cd "$root" && pwd -P)
+  # Resolve target: a path (contains a slash or exists) is used as-is. A bare
+  # slug maps to a worktree under .worktrees/. Worktrees are named
+  # <intent>-<slug>, so accept either the full dir name (feature-foo) OR just
+  # the slug (foo) — matching the trailing -<slug> against the actual dirs.
+  local wt_path=""
+  if [[ "$target" == */* || -e "$target" ]]; then
+    wt_path="$target"
+  elif [[ -d "$root/.worktrees/$target" ]]; then
+    wt_path="$root/.worktrees/$target"
+  else
+    # No exact dir match; look for .worktrees/<intent>-<slug>.
+    local cand match_count=0 match=""
+    for cand in "$root"/.worktrees/*-"$target"; do
+      [[ -d "$cand" ]] || continue
+      match="$cand"; match_count=$((match_count + 1))
+    done
+    if (( match_count == 1 )); then
+      wt_path="$match"
+    elif (( match_count > 1 )); then
+      echo "ERROR: slug '$target' matches multiple worktrees; pass the full path or <intent>-<slug>." >&2
+      exit 1
+    else
+      # Fall back to the literal path so the not-found message is clear.
+      wt_path="$root/.worktrees/$target"
+    fi
+  fi
+  # Not-found check runs before any cd/resolution so the error is immediate.
+  if [[ ! -e "$wt_path" ]]; then
+    echo "ERROR: no such worktree: $wt_path" >&2; exit 1
+  fi
+  # Containment check: resolved path must be under $root/.worktrees/ (defense-in-depth
+  # on top of git's own enforcement — rejects traversal paths like ../../sensitive).
+  local resolved
+  resolved=$(cd "$wt_path" 2>/dev/null && pwd -P || echo "$wt_path")
+  if [[ "$resolved" != "$root/.worktrees/"* ]]; then
+    echo "ERROR: refusing to remove path outside .worktrees/: $resolved" >&2; exit 1
+  fi
+  # Never operate on the main worktree ($root is the physical repo root, so this
+  # comparison holds even when the repo is reached via a symlinked path).
+  if [[ "$resolved" == "$root" ]]; then
+    echo "ERROR: refusing to remove the main worktree ($root)" >&2; exit 1
+  fi
+  local out rc=0
+  if (( force )); then
+    out=$(git worktree remove --force "$wt_path" 2>&1) || rc=$?
+  else
+    out=$(git worktree remove "$wt_path" 2>&1) || rc=$?
+  fi
+  if (( rc != 0 )); then
+    echo "ERROR: git worktree remove failed:" >&2
+    echo "$out" >&2
+    echo "  (uncommitted/unmerged changes? re-run with --force to discard)" >&2
+    exit 1
+  fi
+  echo "Removed worktree: $wt_path"
+  echo "Branch left intact. Delete it with: git branch -D <branch> (or -d if merged)."
+}
+
 cmd_eval() {
   # Karpathy loop dispatcher. Delegates to lib/karpathy/runner.py via module mode.
   # Per feedback_harness_lib_must_launch_via_module_mode memory.
@@ -1584,10 +2405,23 @@ case "${1:-status}" in
   desk)       shift 2>/dev/null || true; cmd_desk "$@" ;;
   dashboard)  shift 2>/dev/null || true; cmd_dashboard "$@" ;;
   tenant)     shift 2>/dev/null || true; cmd_tenant "$@" ;;
+  permit)     shift 2>/dev/null || true
+              # shellcheck source=../lib/permit.sh
+              source "$SCRIPT_DIR/lib/permit.sh"
+              permit_main "$@" ;;
+  permit-uat) shift 2>/dev/null || true
+              # shellcheck source=../lib/tenant_permit_replay.sh
+              source "$SCRIPT_DIR/lib/tenant_permit_replay.sh"
+              tenant_permit_replay_main "$@" ;;
+  uat)        shift 2>/dev/null || true; cmd_uat "$@" ;;
   tools)      shift 2>/dev/null || true; cmd_tools "$@" ;;
   metric)     shift 2>/dev/null || true; cmd_metric "$@" ;;
   trace)      shift 2>/dev/null || true; cmd_trace "$@" ;;
   eval)       shift 2>/dev/null || true; cmd_eval "$@" ;;
+  branch)     shift 2>/dev/null || true; cmd_branch "$@" ;;
+  worktree)   shift 2>/dev/null || true; cmd_worktree "$@" ;;
+  autopilot)  shift 2>/dev/null || true; cmd_autopilot "$@" ;;
+  audit)      shift 2>/dev/null || true; cmd_audit "$@" ;;
   help)       cmd_help ;;
   *)          echo "Unknown command: $1"; cmd_help; exit 1 ;;
 esac

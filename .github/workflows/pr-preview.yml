@@ -55,12 +55,37 @@ jobs:
         working-directory: client-app
 
     steps:
+      # Skip-when-no-secret: same workflow file ships to both HARNESS
+      # backbone and tenant `deploy-<tenant>` repos via `harness-init` /
+      # `harness update`. HARNESS itself has no Netlify site, so this
+      # guard lets the file live in both places without operator branching.
+      # Tenant repos set NETLIFY_AUTH_TOKEN + NETLIFY_SITE_ID and run the
+      # full deploy below.
+      - name: Check Netlify secrets configured
+        id: secrets_check
+        # Override defaults.run.working-directory: this step runs BEFORE
+        # checkout, so client-app/ doesn't exist yet. Without this override
+        # bash fails to start ("No such file or directory").
+        working-directory: .
+        run: |
+          if [ -z "${NETLIFY_AUTH_TOKEN}" ] || [ -z "${NETLIFY_SITE_ID}" ]; then
+            echo "::notice::Netlify secrets not configured — skipping G2 preview deploy."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+
       - name: Checkout PR head
+        if: steps.secrets_check.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Setup Node
+        if: steps.secrets_check.outputs.skip != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -68,9 +93,11 @@ jobs:
           cache-dependency-path: client-app/package-lock.json
 
       - name: Install dependencies
+        if: steps.secrets_check.outputs.skip != 'true'
         run: npm ci
 
       - name: Deploy preview to Netlify
+        if: steps.secrets_check.outputs.skip != 'true'
         id: deploy
         run: |
           set -euo pipefail
@@ -91,6 +118,7 @@ jobs:
           NEXT_PUBLIC_APP_URL: https://pr-${{ github.event.pull_request.number }}--${{ secrets.NETLIFY_SITE_NAME }}.netlify.app
 
       - name: Comment preview URL on PR
+        if: steps.secrets_check.outputs.skip != 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: pr-preview

@@ -39,13 +39,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRC_SKILL="$HARNESS_ROOT/lib/user-commands/pr-review.md"
 SRC_HOOK="$HARNESS_ROOT/.claude/git-hooks/pre-push"
+SRC_WT_GUARD="$HARNESS_ROOT/.claude/hooks/harness-worktree-guard.sh"
+SRC_WT_LIB="$HARNESS_ROOT/lib/worktree-guard.sh"
+SRC_WT_MERGE="$HARNESS_ROOT/lib/merge-pretooluse-hook.py"
 
 DEST_CMD_DIR="$HOME/.claude/commands"
 DEST_HOOK_DIR="$HOME/.claude/git-hooks"
 DEST_SKILL="$DEST_CMD_DIR/pr-review.md"
 DEST_HOOK="$DEST_HOOK_DIR/pre-push"
+DEST_CC_HOOK_DIR="$HOME/.claude/hooks"
+DEST_WT_GUARD="$DEST_CC_HOOK_DIR/harness-worktree-guard.sh"
+DEST_WT_LIB="$DEST_CC_HOOK_DIR/lib/worktree-guard.sh"
+DEST_SETTINGS="$HOME/.claude/settings.json"
 
-for f in "$SRC_SKILL" "$SRC_HOOK"; do
+for f in "$SRC_SKILL" "$SRC_HOOK" "$SRC_WT_GUARD" "$SRC_WT_LIB" "$SRC_WT_MERGE"; do
   if [[ ! -f "$f" ]]; then
     echo "ERROR: $f not found — is this script running from inside HARNESS?"
     exit 1
@@ -95,6 +102,22 @@ if [[ "$current_hooks_path" != "$DEST_HOOK_DIR" ]]; then
 else
   say "core.hooksPath already set"
 fi
+
+# --- Install worktree-edit guard (PreToolUse hook) ------------------------
+mkdir -p "$DEST_CC_HOOK_DIR/lib"
+for pair in "$SRC_WT_GUARD:$DEST_WT_GUARD" "$SRC_WT_LIB:$DEST_WT_LIB"; do
+  src="${pair%%:*}"; dst="${pair##*:}"
+  if (( FORCE )) || [[ ! -f "$dst" ]] || ! cmp -s "$src" "$dst"; then
+    say "install $(basename "$dst")"
+    run cp -- "$src" "$dst"
+  else
+    say "$(basename "$dst") already current"
+  fi
+done
+run chmod +x "$DEST_WT_GUARD"
+
+say "merge worktree-guard PreToolUse entry into settings.json"
+run python3 "$SRC_WT_MERGE" "$DEST_SETTINGS" "$DEST_WT_GUARD"
 
 # --- Install HARNESS-owned chain skills -----------------------------------
 # These skills are referenced by qualified name (harness:define-metric,
