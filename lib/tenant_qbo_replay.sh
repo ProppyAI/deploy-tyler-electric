@@ -77,7 +77,12 @@ else:
   fi
   # strip trailing slash if present
   url="${url%/}"
-  if [[ "$url" != https://* && "$url" != http://localhost* && "$url" != http://127.0.0.1* ]]; then
+  # Allow https:// (any host) or an EXACT localhost/127.0.0.1 base (port-optional).
+  # Exact-match guards against prefix-glob bypass — `http://localhost.evil.com`
+  # must NOT be accepted as "localhost" and have the Bearer token sent to it.
+  if [[ "$url" != https://* \
+     && "$url" != "http://localhost" && "$url" != "http://localhost:"* \
+     && "$url" != "http://127.0.0.1" && "$url" != "http://127.0.0.1:"* ]]; then
     echo "tenant_qbo_replay: resolved URL must use HTTPS (got ${url}) — check deployment.url/deployment_url/subdomain" >&2
     return 1
   fi
@@ -138,7 +143,9 @@ print(json.dumps({"outbox_row_id": sys.argv[1], "apply": sys.argv[2] == "true"})
 ' "$row_id" "$apply")"
 
   local response
-  response="$(curl -sS -X POST "${tenant_url}/api/internal/qbo-replay" \
+  # --max-redirs 0: curl already does not follow redirects without -L, but make
+  # it explicit so a 3xx can never forward the Bearer token to another host.
+  response="$(curl -sS --max-redirs 0 -X POST "${tenant_url}/api/internal/qbo-replay" \
     -H "Authorization: Bearer ${INTERNAL_JOB_SECRET}" \
     -H "Content-Type: application/json" \
     -d "$body")" || {
