@@ -1,140 +1,196 @@
 #!/usr/bin/env bash
-# Apply client-app migrations to this tenant's Supabase project via the
-# Supabase Management API. Works from anywhere — no DB network reachability
-# required. Canonical migration mechanism for HARNESS tenant deployments.
+# apply-migrations.sh — HARNESS canonical migration mechanism for tenant
+# Supabase projects. Applies client-app migrations via the Supabase
+# Management API (no DB network reachability required).
 #
 # Tracks applied migrations in a public.schema_migrations table so reruns
 # are idempotent: already-applied files are skipped, only new files are
-# applied. Each migration is applied in its own transaction so a failure
+# applied. Each migration applies in its own transaction so a failure
 # in file N doesn't block diagnosis of file N+1.
 #
-# Requires:
-#   SUPABASE_ACCESS_TOKEN — personal access token from
-#                           https://supabase.com/dashboard/account/tokens
-#   SUPABASE_PROJECT_REF  — project ref (20-char slug), defaults to this
-#                           deployment's ref from harness.json
-#   MIGRATIONS_DIR        — path to migrations dir, defaults to
-#                           ../HARNESS/client-app/supabase/migrations
-#                           relative to this script
+# CANONICAL LOCATION (Phase 3 relocation, 2026-05-14):
+#   This script lives in HARNESS/scripts/ — NOT in any tenant repo. Per the
+#   HARNESS operating principle in CLAUDE.md, all tooling that operates
+#   on tenants is owned here and `harness update-tenant` is the front door
+#   for routine deploys. Tenant-repo copies are deprecated.
+#
+# REQUIRED ENV (auto-sourced from ~/.harness/operator.env):
+#   SUPABASE_ACCESS_TOKEN  — Supabase PAT (sbp_*). Aliased from
+#                            SUPABASE_MANAGEMENT_PAT if that name is set
+#                            in operator.env instead (back-compat).
+#
+# REQUIRED ARGS:
+#   --deploy-path PATH     — absolute path to the tenant deploy repo (the
+#                            one with harness.json). Read for
+#                            deployment.supabase_project_ref unless
+#                            SUPABASE_PROJECT_REF is set.
+#
+# OPTIONAL ENV:
+#   SUPABASE_PROJECT_REF   — override the project ref from harness.json
+#   MIGRATIONS_DIR         — path to migrations dir, defaults to
+#                            HARNESS/client-app/supabase/migrations
+#                            relative to this script
+#   HARNESS_OPERATOR_ENV   — override the operator.env path
+#                            (default: ~/.harness/operator.env)
+#
+# MODES (mutually exclusive):
+#   (default)              — Apply pending migrations
+#   --bootstrap            — Greenfield: register ALL current files as applied
+#                            without running them. ONLY safe if every current
+#                            migration file has actually been applied.
+#   --bootstrap-up-to FILE — Register migrations 00001..FILE as applied
+#                            without running them. Use when schema_migrations
+#                            is being introduced mid-stream.
+#   --dry-run              — Show what would be applied without applying
 #
 # Usage:
-#   export SUPABASE_ACCESS_TOKEN=sbp_...
+#   bash $HARNESS/scripts/apply-migrations.sh --deploy-path /path/to/tenant
 #
-#   # Normal: apply pending migrations
-#   bash scripts/apply-migrations.sh
-#
-#   # First time on a DB where SOME migrations are applied but newer ones
-#   # aren't: register migrations 00001..<filename> as applied without
-#   # running them. Use this when migration tracking is being introduced
-#   # mid-stream (existing tenants with applied schema but no
-#   # schema_migrations table yet).
-#   bash scripts/apply-migrations.sh --bootstrap-up-to 00010_payments_split_unique.sql
-#
-#   # Greenfield bootstrap — register ALL current files as applied without
-#   # running them. ONLY safe if every current migration file has actually
-#   # been applied to the DB.
-#   bash scripts/apply-migrations.sh --bootstrap
-#
-#   # See what would be applied without actually applying
-#   bash scripts/apply-migrations.sh --dry-run
+# Or via the harness CLI (preferred):
+#   harness update-tenant tyler-electric
 #
 # CONCURRENCY: Do not run this script in parallel against the same project.
 # Migrations are not serialized at the script level; callers must guarantee
-# single-instance execution (CI: use concurrency.group; humans: don't share a
-# project ref).
+# single-instance execution. The harness CLI dispatcher serializes via the
+# session lock contract.
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HARNESS_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Source operator.env (sets SUPABASE_ACCESS_TOKEN, applies aliases).
+# shellcheck source=../lib/operator-env.sh
+source "$HARNESS_ROOT/lib/operator-env.sh"
+
+# --- Arg parsing ------------------------------------------------------------
+
 MODE="apply"
 BOOTSTRAP_UP_TO=""
+DEPLOY_PATH=""
+MODE_SET_BY=""   # tracks which flag set MODE (for mutex error message)
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --deploy-path)
+      DEPLOY_PATH="${2:-}"
+      if [[ -z "$DEPLOY_PATH" ]]; then
+        echo "ERROR: --deploy-path requires a path argument" >&2
+        exit 1
+      fi
+      shift 2
+      ;;
     --bootstrap)
+      if [[ -n "$MODE_SET_BY" ]]; then
+        echo "ERROR: --bootstrap conflicts with already-set mode flag: $MODE_SET_BY" >&2
+        echo "       Modes (--bootstrap, --bootstrap-up-to, --dry-run) are mutually exclusive." >&2
+        exit 1
+      fi
       MODE="bootstrap"
+      MODE_SET_BY="--bootstrap"
       shift
       ;;
     --bootstrap-up-to)
+      if [[ -n "$MODE_SET_BY" ]]; then
+        echo "ERROR: --bootstrap-up-to conflicts with already-set mode flag: $MODE_SET_BY" >&2
+        echo "       Modes (--bootstrap, --bootstrap-up-to, --dry-run) are mutually exclusive." >&2
+        exit 1
+      fi
       MODE="bootstrap"
       BOOTSTRAP_UP_TO="${2:-}"
+      MODE_SET_BY="--bootstrap-up-to"
       if [[ -z "$BOOTSTRAP_UP_TO" ]]; then
-        echo "ERROR: --bootstrap-up-to requires a filename argument"
-        echo "       e.g., --bootstrap-up-to 00010_payments_split_unique.sql"
+        echo "ERROR: --bootstrap-up-to requires a filename argument" >&2
+        echo "       e.g., --bootstrap-up-to 00010_payments_split_unique.sql" >&2
         exit 1
       fi
       shift 2
       ;;
     --dry-run)
+      if [[ -n "$MODE_SET_BY" ]]; then
+        echo "ERROR: --dry-run conflicts with already-set mode flag: $MODE_SET_BY" >&2
+        echo "       Modes (--bootstrap, --bootstrap-up-to, --dry-run) are mutually exclusive." >&2
+        exit 1
+      fi
       MODE="dry-run"
+      MODE_SET_BY="--dry-run"
       shift
       ;;
     -h|--help)
-      sed -n '2,44p' "$0"
+      sed -n '2,60p' "$0"
       exit 0
       ;;
     *)
-      echo "ERROR: unknown flag: $1"
+      echo "ERROR: unknown flag: $1" >&2
       exit 1
       ;;
   esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# --- Secret + path validation -----------------------------------------------
 
-# Validate a migration filename matches the safe shape. Filenames flow into
-# SQL string literals and shell loops; enforce the pattern the inline
-# comments assume rather than trusting the source dir.
+require_operator_secret SUPABASE_ACCESS_TOKEN \
+  "Supabase PAT from https://supabase.com/dashboard/account/tokens (key name SUPABASE_MANAGEMENT_PAT also accepted)"
+
+if [[ -z "$DEPLOY_PATH" ]]; then
+  echo "ERROR: --deploy-path is required (path to the tenant deploy repo)." >&2
+  echo "       Pass it explicitly, or use 'harness update-tenant <name>' which infers it." >&2
+  exit 1
+fi
+if [[ ! -d "$DEPLOY_PATH" ]]; then
+  echo "ERROR: --deploy-path does not exist or is not a directory: $DEPLOY_PATH" >&2
+  exit 1
+fi
+DEPLOY_HARNESS_JSON="$DEPLOY_PATH/harness.json"
+if [[ ! -f "$DEPLOY_HARNESS_JSON" ]]; then
+  echo "ERROR: harness.json not found in deploy path: $DEPLOY_HARNESS_JSON" >&2
+  exit 1
+fi
+
+# --- Filename safety guard --------------------------------------------------
+
 assert_safe_filename() {
   local fname="$1"
   if [[ ! "$fname" =~ ^[0-9A-Za-z_.-]+\.sql$ ]]; then
-    echo "ERROR: unsafe migration filename rejected: $fname"
-    echo "       Filenames must match: ^[0-9A-Za-z_.-]+\\.sql$"
+    echo "ERROR: unsafe migration filename rejected: $fname" >&2
+    echo "       Filenames must match: ^[0-9A-Za-z_.-]+\\.sql$" >&2
     exit 1
   fi
 }
 
-if [[ -z "${SUPABASE_ACCESS_TOKEN:-}" ]]; then
-  echo "ERROR: SUPABASE_ACCESS_TOKEN is required."
-  echo "Generate one at: https://supabase.com/dashboard/account/tokens"
-  echo "Then: export SUPABASE_ACCESS_TOKEN=sbp_..."
-  exit 1
-fi
+# --- Resolve PROJECT_REF + MIGRATIONS_DIR ----------------------------------
 
-PROJECT_REF="${SUPABASE_PROJECT_REF:-$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['deployment']['supabase_project_ref'])" "$REPO_ROOT/harness.json")}"
+PROJECT_REF="${SUPABASE_PROJECT_REF:-$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['deployment']['supabase_project_ref'])" "$DEPLOY_HARNESS_JSON")}"
 if [[ ! "$PROJECT_REF" =~ ^[a-z0-9]{20}$ ]]; then
-  echo "ERROR: invalid SUPABASE_PROJECT_REF format: $PROJECT_REF"
-  echo "       Expected 20 lowercase alphanumeric chars (Supabase project ref shape)."
+  echo "ERROR: invalid SUPABASE_PROJECT_REF format: $PROJECT_REF" >&2
+  echo "       Expected 20 lowercase alphanumeric chars (Supabase project ref shape)." >&2
   exit 1
 fi
-MIGRATIONS_DIR="${MIGRATIONS_DIR:-$REPO_ROOT/../HARNESS/client-app/supabase/migrations}"
 
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-$HARNESS_ROOT/client-app/supabase/migrations}"
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
-  echo "ERROR: migrations dir not found: $MIGRATIONS_DIR"
-  echo "Set MIGRATIONS_DIR to override, e.g.:"
-  echo "  MIGRATIONS_DIR=/path/to/HARNESS/client-app/supabase/migrations bash $0"
+  echo "ERROR: migrations dir not found: $MIGRATIONS_DIR" >&2
+  echo "       Set MIGRATIONS_DIR to override." >&2
   exit 1
 fi
 
 API_URL="https://api.supabase.com/v1/projects/${PROJECT_REF}/database/query"
 
 echo "Project:      $PROJECT_REF"
+echo "Deploy path:  $DEPLOY_PATH"
 echo "Migrations:   $MIGRATIONS_DIR"
 echo "Mode:         $MODE"
 echo ""
 
-# Run a single SQL statement (or batch) against the Management API.
-# Args:
-#   $1 — SQL to execute
-#   $2 — human label for error messages
-# Echoes the response body; exits non-zero on HTTP failure.
+# --- Management API caller --------------------------------------------------
+
+# run_sql SQL LABEL
+#   POST SQL to the Supabase Management API. Streams SQL through printf|python
+#   into curl's --data @<(...) so the body never hits argv (ARG_MAX safety).
+#   Echoes the response body; exits non-zero on HTTP or content-level error.
 run_sql() {
   local sql="$1"
   local label="$2"
-  # Stream the SQL through bash's printf builtin (no execve) into python3's
-  # stdin (no argv) and hand curl the JSON body via /dev/fd process
-  # substitution (no --data argv). This keeps the request body off the
-  # shell argv path so large migrations cannot trip ARG_MAX on either
-  # python3 or curl. Mirrors the original script's --data @<(...) pattern.
   local response
   response=$(curl -sS \
     --fail-with-body \
@@ -143,13 +199,11 @@ run_sql() {
     -H "Content-Type: application/json" \
     --data @<(printf '%s' "$sql" | python3 -c "import json,sys; print(json.dumps({'query': sys.stdin.read()}))") \
     2>&1) || {
-    echo "ERROR ($label): Management API call failed."
-    echo "$response"
+    echo "ERROR ($label): Management API call failed." >&2
+    echo "$response" >&2
     exit 1
   }
-  # Defense in depth: catch HTTP-200-with-error-body. Supabase Management API
-  # normally returns 4xx for SQL errors (caught by --fail-with-body above),
-  # but probe for an error/message key as a safety net.
+  # Defense in depth: catch HTTP-200-with-error-body shape.
   local probe
   probe=$(printf '%s' "$response" | python3 -c "
 import json, sys
@@ -163,15 +217,14 @@ if isinstance(data, dict):
             print(f'API_ERROR: {key}={data[key]}')
             sys.exit(1)
 " 2>&1) || {
-    echo "ERROR ($label): API returned a non-error HTTP status but the response body contains an error key."
-    echo "$probe"
-    echo "$response"
+    echo "ERROR ($label): API returned a non-error HTTP status but body contains an error key." >&2
+    echo "$probe" >&2
+    echo "$response" >&2
     exit 1
   }
   echo "$response"
 }
 
-# Ensure schema_migrations exists. CREATE TABLE IF NOT EXISTS is idempotent.
 ensure_tracking_table() {
   run_sql \
     "CREATE TABLE IF NOT EXISTS public.schema_migrations (filename TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());" \
@@ -179,7 +232,6 @@ ensure_tracking_table() {
     >/dev/null
 }
 
-# Read list of applied migration filenames from schema_migrations.
 list_applied() {
   local response
   response=$(run_sql \
@@ -188,40 +240,27 @@ list_applied() {
   python3 -c "
 import json, sys
 data = json.loads(sys.argv[1])
-# Management API returns a list of rows when SELECT returns rows
 if isinstance(data, list):
     for row in data:
-        # row may be {'filename': '00001_initial_schema.sql'} or similar
         if isinstance(row, dict) and 'filename' in row:
             print(row['filename'])
 " "$response"
 }
 
-# Record a migration as applied (called after a successful per-file apply).
 record_applied() {
   local filename="$1"
   assert_safe_filename "$filename"
-  # Use parameterized-safe value via printf %q-style escaping; the filename
-  # is constrained to NN_name.sql shapes so this is safe.
   run_sql \
     "INSERT INTO public.schema_migrations (filename) VALUES ('${filename}') ON CONFLICT (filename) DO NOTHING;" \
     "record ${filename}" \
     >/dev/null
 }
 
-# CONCURRENCY: This script does not serialize concurrent invocations against
-# the same Supabase project. If two CI jobs run simultaneously and both see
-# the same file as pending, both will execute it. Migrations should be
-# idempotent (CREATE TABLE IF NOT EXISTS, ALTER TABLE ADD COLUMN IF NOT EXISTS)
-# OR callers must serialize themselves (e.g., GitHub Actions concurrency: group).
-# A pg_advisory_xact_lock approach was considered but each Management API
-# POST is a separate session, so session-locks do not span the pending-list
-# read and the per-file apply. Pre-claiming the tracking row would break the
-# current single-transaction atomicity guarantee. Document instead of work
-# around.
-#
-# Apply a single migration file in its own transaction.
-# Args: $1 = path to .sql file
+# apply_one PATH
+#   Wraps a migration file's contents in BEGIN/COMMIT alongside the
+#   schema_migrations INSERT so both commit atomically. If the file already
+#   has its own BEGIN/COMMIT (whitespace + comment tolerant), strip those
+#   to avoid nested-transaction errors.
 apply_one() {
   local file="$1"
   local fname
@@ -229,20 +268,12 @@ apply_one() {
   assert_safe_filename "$fname"
   local content
   content=$(cat "$file")
-  # Wrap in BEGIN/COMMIT so this file's statements are atomic. If the
-  # caller's content already has its own BEGIN/COMMIT (like 00011), the
-  # outer transaction will conflict — strip leading BEGIN; / trailing COMMIT;
-  # if they're present at the start/end of the file (whitespace-tolerant).
   local stripped
   stripped=$(printf '%s\n' "$content" | python3 -c "
 import re, sys
 text = sys.stdin.read()
 lines = text.split('\n')
 def strip_inline_blocks(s):
-    # Remove complete /* ... */ segments from a single line so the scanner
-    # sees the surrounding SQL keywords (e.g. 'COMMIT; /* note */' -> 'COMMIT;').
-    # Multi-line blocks where /* opens without a matching */ on the same line
-    # are left alone — the in_block state machine handles those.
     while True:
         start = s.find('/*')
         if start < 0:
@@ -251,25 +282,18 @@ def strip_inline_blocks(s):
         if end < 0:
             return s
         s = s[:start] + s[end + 2:]
-# Strip leading BEGIN / BEGIN TRANSACTION / BEGIN ISOLATION LEVEL ...
-# (allow blank lines, -- line comments, and /* */ block comments before it)
+# Strip leading BEGIN (allow blank lines, -- and /* */ before it)
 i = 0
 in_block = False
-block_start = -1  # index of the line that opened the current multi-line block
+block_start = -1
 while i < len(lines):
     s = strip_inline_blocks(lines[i]).strip()
     if in_block:
         idx = s.find('*/')
         if idx >= 0:
             in_block = False
-            # Re-evaluate content AFTER */ on this line — catches the
-            # '*/ BEGIN;' pattern where the block closer and BEGIN share a line.
             remainder = s[idx + 2:].strip()
             if remainder and not remainder.startswith('--') and not remainder.startswith('/*'):
-                # Replace this line with the surviving SQL so the BEGIN
-                # matcher below sees just the trailing statement. Also
-                # blank out the multi-line block we just walked through
-                # so the resulting SQL has no unclosed /* opener.
                 for k in range(block_start, i):
                     lines[k] = ''
                 lines[i] = remainder
@@ -281,8 +305,6 @@ while i < len(lines):
         i += 1
         continue
     if s.startswith('/*'):
-        # After strip_inline_blocks, any '/*' still here is an unclosed
-        # multi-line opener — engage the state machine.
         in_block = True
         block_start = i
         i += 1
@@ -290,10 +312,7 @@ while i < len(lines):
     break
 if i < len(lines) and re.match(r'^BEGIN\b', strip_inline_blocks(lines[i]).strip().upper()):
     lines[i] = ''
-# Strip trailing COMMIT; or END; (Postgres synonym for COMMIT)
-# Mirror the leading skip: tolerate blank lines, -- comments, and /* */ blocks.
-# Scanning bottom-up, a block comment is identified by '*/' on a line (close)
-# and we continue past lines until we consume the matching '/*' opener.
+# Strip trailing COMMIT/END (mirror, bottom-up)
 j = len(lines) - 1
 in_block = False
 while j >= 0:
@@ -307,8 +326,6 @@ while j >= 0:
         j -= 1
         continue
     if s.endswith('*/'):
-        # After strip_inline_blocks, any line still ending in '*/' is the
-        # closer of a multi-line block — engage the state machine.
         in_block = True
         j -= 1
         continue
@@ -317,9 +334,6 @@ if j >= 0 and re.match(r'^(COMMIT|END)\b', strip_inline_blocks(lines[j]).strip()
     lines[j] = ''
 print('\n'.join(lines))
 ")
-  # Include the schema_migrations INSERT inside the same transaction so the
-  # migration and its tracking row commit atomically — prevents the failure
-  # mode where the migration lands but record_applied is never called.
   local wrapped
   wrapped="BEGIN;
 ${stripped}
@@ -328,49 +342,51 @@ COMMIT;"
   run_sql "$wrapped" "apply ${fname}" >/dev/null
 }
 
-# --- Mode dispatch ---
+# --- Mode dispatch ----------------------------------------------------------
 
-# Don't create the tracking table in dry-run — that mode must be read-only.
 [[ "$MODE" != "dry-run" ]] && ensure_tracking_table
 
-mapfile -t ALL_FILES < <(ls -1 "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort)
+# bash-3.2 compatible array population (replaces `mapfile -t` from PR #1).
+# macOS ships bash 3.2.57; mapfile is bash-4+ only and silently fails the
+# script with "mapfile: command not found" on a fresh checkout. The
+# while-IFS=read loop below is functionally identical and portable.
+ALL_FILES=()
+while IFS= read -r _f; do
+  [[ -n "$_f" ]] && ALL_FILES+=("$_f")
+done < <(ls -1 "$MIGRATIONS_DIR"/*.sql 2>/dev/null | sort)
+
 if [[ ${#ALL_FILES[@]} -eq 0 ]]; then
   echo "No migration files found in $MIGRATIONS_DIR — nothing to do."
   exit 0
 fi
 
-# Validate every discovered filename before any further processing — catches
-# hostile filenames even for files that won't be applied this run.
+# Validate every discovered filename before any further processing.
 for _f in "${ALL_FILES[@]}"; do
   assert_safe_filename "$(basename "$_f")"
 done
 
 # Capture list_applied output explicitly so a failure (network blip, auth
-# expiry, table missing) is caught before APPLIED is populated. If mapfile
-# were fed from a failed process substitution directly, it would silently
-# produce an empty array and cause every migration to be re-applied.
+# expiry, table missing) is caught before APPLIED is populated. Without
+# this, downstream code would see an empty applied list and re-apply
+# every migration — catastrophic.
 if [[ "$MODE" == "dry-run" ]]; then
-  # Keep dry-run non-fatal but make any degradation visible. If
-  # schema_migrations is missing or the API errors transiently, the pending
-  # list below would otherwise misleadingly include already-applied files —
-  # surface a WARNING so the operator can decide whether to trust the output.
-  local_err=$(mktemp)
-  # Scope cleanup to abnormal termination (SIGINT, etc.) during this block.
-  # Explicit rm + trap-clear on the success path keeps the trap from firing
-  # during the script's normal exit later.
-  trap 'rm -f "$local_err"' EXIT
-  if ! applied_output=$(list_applied 2>"$local_err"); then
+  # Dry-run is non-fatal but must surface degradation. If schema_migrations
+  # is missing or the API errors transiently, the pending list would
+  # otherwise misleadingly include already-applied files.
+  _stderr_capture=$(mktemp)
+  trap 'rm -f "$_stderr_capture"' EXIT
+  if ! applied_output=$(list_applied 2>"$_stderr_capture"); then
     echo "WARNING: could not read schema_migrations (table missing or API error). Pending list below may be inaccurate." >&2
-    if [[ -s "$local_err" ]]; then
-      sed 's/^/  detail: /' "$local_err" >&2
+    if [[ -s "$_stderr_capture" ]]; then
+      sed 's/^/  detail: /' "$_stderr_capture" >&2
     fi
     applied_output=""
   fi
-  rm -f "$local_err"
+  rm -f "$_stderr_capture"
   trap - EXIT
 else
   if ! applied_output=$(list_applied); then
-    echo "ERROR: failed to read applied-migrations list — aborting to prevent re-apply."
+    echo "ERROR: failed to read applied-migrations list — aborting to prevent re-apply." >&2
     exit 1
   fi
 fi
@@ -384,7 +400,7 @@ PENDING=()
 for f in "${ALL_FILES[@]}"; do
   fname=$(basename "$f")
   found=0
-  for a in "${APPLIED[@]:-}"; do
+  for a in "${APPLIED[@]+"${APPLIED[@]}"}"; do
     if [[ "$a" == "$fname" ]]; then found=1; break; fi
   done
   if [[ $found -eq 0 ]]; then PENDING+=("$f"); fi
@@ -392,48 +408,44 @@ done
 
 case "$MODE" in
   bootstrap)
-    # If --bootstrap-up-to <filename> was specified, only mark migrations
-    # whose basename is <= that filename (lexicographic) as applied. This
-    # is the safe path when an existing DB has migrations 00001..N applied
-    # and N+1..M still pending. Without --bootstrap-up-to, bootstrap marks
-    # ALL pending files as applied — use ONLY on greenfield setups where
-    # every current migration file has actually been applied.
     BOOTSTRAP_SET=()
     if [[ -n "$BOOTSTRAP_UP_TO" ]]; then
-      # Verify the named file exists in pending list
       target_found=0
-      for f in "${PENDING[@]}"; do
-        if [[ "$(basename "$f")" == "$BOOTSTRAP_UP_TO" ]]; then
-          target_found=1
-          break
-        fi
-      done
+      if [[ ${#PENDING[@]} -gt 0 ]]; then
+        for f in "${PENDING[@]}"; do
+          if [[ "$(basename "$f")" == "$BOOTSTRAP_UP_TO" ]]; then
+            target_found=1
+            break
+          fi
+        done
+      fi
       if [[ $target_found -eq 0 ]]; then
-        # Check whether the target exists in ALL_FILES (already applied) vs truly missing.
+        # Differentiate "already applied" from "missing".
         for f in "${ALL_FILES[@]}"; do
           if [[ "$(basename "$f")" == "$BOOTSTRAP_UP_TO" ]]; then
-            echo "Note: --bootstrap-up-to target is already recorded as applied: $BOOTSTRAP_UP_TO"
-            echo "Nothing to bootstrap. Run without --bootstrap-up-to to see pending state."
+            echo "Note: --bootstrap-up-to target is already recorded as applied: $BOOTSTRAP_UP_TO" >&2
+            echo "Nothing to bootstrap. Run without --bootstrap-up-to to see pending state." >&2
             exit 0
           fi
         done
-        echo "ERROR: --bootstrap-up-to target not found in migrations dir: $BOOTSTRAP_UP_TO"
-        echo "       Available files in $MIGRATIONS_DIR:"
-        for f in "${ALL_FILES[@]}"; do echo "         $(basename "$f")"; done
+        echo "ERROR: --bootstrap-up-to target not found in migrations dir: $BOOTSTRAP_UP_TO" >&2
+        echo "       Available files in $MIGRATIONS_DIR:" >&2
+        for f in "${ALL_FILES[@]}"; do echo "         $(basename "$f")" >&2; done
         exit 1
       fi
-      # Collect pending files up to and including BOOTSTRAP_UP_TO (sorted order)
       for f in "${PENDING[@]}"; do
         fname=$(basename "$f")
         BOOTSTRAP_SET+=("$f")
         if [[ "$fname" == "$BOOTSTRAP_UP_TO" ]]; then break; fi
       done
     else
-      BOOTSTRAP_SET=("${PENDING[@]}")
+      if [[ ${#PENDING[@]} -gt 0 ]]; then
+        BOOTSTRAP_SET=("${PENDING[@]}")
+      fi
     fi
 
     if [[ ${#BOOTSTRAP_SET[@]} -eq 0 ]]; then
-      echo "Nothing to bootstrap."
+      echo "Nothing to bootstrap." >&2
       exit 0
     fi
     echo "Bootstrap: registering ${#BOOTSTRAP_SET[@]} migration file(s) as already-applied (no SQL executed):"

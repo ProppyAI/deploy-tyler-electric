@@ -1,0 +1,604 @@
+#!/usr/bin/env bash
+# Bootstrap a repo to use the HARNESS backbone.
+# Run from the root of any repo:
+#   bash /path/to/harness-init                     # local mode (auto-detected)
+#   HARNESS_LOCAL=/path/to/HARNESS bash harness-init  # explicit local path
+#   curl -sL https://raw.githubusercontent.com/ORG/REPO/main/bin/harness-init | bash
+
+set -euo pipefail
+
+# Canonical entity list — keep in sync with schemas/entities/
+# Used by both local (as fallback) and remote fetch paths
+HARNESS_ENTITIES=(client job estimate line-item invoice payment permit crew-member schedule-entry session content-asset social-post)
+
+# Detect local mode: if this script lives inside a HARNESS repo, use local files
+# Guard against curl-pipe-bash where BASH_SOURCE[0] is empty or /dev/stdin
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" && "${BASH_SOURCE[0]}" != "/dev/stdin" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
+HARNESS_LOCAL="${HARNESS_LOCAL:-}"
+if [[ -z "$HARNESS_LOCAL" && -n "$SCRIPT_DIR" && -d "$SCRIPT_DIR/../templates/repo-bootstrap" ]]; then
+  HARNESS_LOCAL="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+
+# Guard: refuse to bootstrap the HARNESS backbone repo itself
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [[ -n "$HARNESS_LOCAL" && "$(cd "$HARNESS_LOCAL" && pwd)" == "$(cd "$REPO_ROOT" && pwd)" ]]; then
+  echo "ERROR: You are inside the HARNESS backbone repo itself."
+  echo "harness-init bootstraps OTHER repos to use HARNESS — run it from a different repo."
+  echo ""
+  echo "Example:"
+  echo "  cd /path/to/your-project"
+  echo "  bash $HARNESS_LOCAL/bin/harness-init"
+  exit 1
+fi
+
+if [[ -n "$HARNESS_LOCAL" ]]; then
+  echo "HARNESS — Bootstrapping repo (local mode: $HARNESS_LOCAL)..."
+  FETCH_MODE="local"
+else
+  HARNESS_REF="${HARNESS_REF:-main}"
+  HARNESS_ORG="${HARNESS_ORG:-ProppyAI}"
+  HARNESS_REPO_NAME="${HARNESS_REPO_NAME:-HARNESS}"
+  if ! [[ "$HARNESS_ORG" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: HARNESS_ORG is invalid: $HARNESS_ORG"
+    exit 1
+  fi
+  if ! [[ "$HARNESS_REPO_NAME" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: HARNESS_REPO_NAME is invalid: $HARNESS_REPO_NAME"
+    exit 1
+  fi
+  if ! [[ "$HARNESS_REF" =~ ^[a-zA-Z0-9._/-]+$ ]] || [[ "$HARNESS_REF" == *..* ]]; then
+    echo "ERROR: HARNESS_REF is invalid: $HARNESS_REF"
+    echo "Use a branch name, tag, or commit SHA (e.g., main, v1.0.0, abc1234)"
+    exit 1
+  fi
+  HARNESS_REPO="https://raw.githubusercontent.com/${HARNESS_ORG}/${HARNESS_REPO_NAME}/${HARNESS_REF}"
+  echo "HARNESS — Bootstrapping repo (remote: ${HARNESS_ORG}/${HARNESS_REPO_NAME}@${HARNESS_REF})..."
+  FETCH_MODE="remote"
+fi
+
+# Helper: fetch a file from local or remote source
+fetch_file() {
+  local src_path="$1"
+  local dest_path="$2"
+  if [[ "$FETCH_MODE" == "local" ]]; then
+    cp "$HARNESS_LOCAL/$src_path" "$dest_path"
+  else
+    curl -sfL "$HARNESS_REPO/$src_path" -o "$dest_path"
+  fi
+}
+
+# Prerequisites
+echo "  -> Checking prerequisites..."
+if ! command -v python3 &>/dev/null; then
+  echo "ERROR: python3 is required for HARNESS session tracking but was not found."
+  echo "Install Python 3: https://www.python.org/downloads/"
+  exit 1
+fi
+if ! command -v git &>/dev/null; then
+  echo "ERROR: git is required but was not found."
+  exit 1
+fi
+if [[ "$FETCH_MODE" == "remote" ]] && ! command -v curl &>/dev/null; then
+  echo "ERROR: curl is required for downloading HARNESS files but was not found."
+  exit 1
+fi
+
+# Create workflow directory
+mkdir -p .github/workflows
+
+# Download workflows. PR review is not CI — it runs locally via the
+# global /pr-review command (installed per-developer by HARNESS/bin/harness-setup-dev).
+echo "  -> @claude interactive workflow (issue/PR mentions)"
+fetch_file "templates/repo-bootstrap/.github/workflows/claude.yml" ".github/workflows/claude.yml"
+
+echo "  -> Daily maintenance workflow"
+fetch_file "templates/repo-bootstrap/.github/workflows/maintenance.yml" ".github/workflows/maintenance.yml"
+
+echo "  -> Module cron workflow"
+fetch_file "templates/repo-bootstrap/.github/workflows/cron.yml" ".github/workflows/cron.yml" 2>/dev/null || echo "     (skipped — cron.yml template not found)"
+
+echo "  -> PR preview deploys (customer-facing-changes contract gate G2)"
+fetch_file "templates/repo-bootstrap/.github/workflows/pr-preview.yml" ".github/workflows/pr-preview.yml" 2>/dev/null || echo "     (skipped — pr-preview.yml template not found)"
+
+# Download CLAUDE.md if it doesn't exist
+if [[ ! -f CLAUDE.md ]]; then
+  echo "  -> CLAUDE.md template"
+  fetch_file "templates/repo-bootstrap/CLAUDE.md" "CLAUDE.md"
+else
+  echo "  -> CLAUDE.md already exists, skipping"
+fi
+
+# Download REVIEW.md if it doesn't exist
+if [[ ! -f REVIEW.md ]]; then
+  echo "  -> REVIEW.md template (code review guidelines)"
+  fetch_file "templates/repo-bootstrap/REVIEW.md" "REVIEW.md"
+else
+  echo "  -> REVIEW.md already exists, skipping"
+fi
+
+# Create .harness directory for session tracking
+mkdir -p .harness/sessions
+echo "  -> .harness/ directory for session tracking"
+
+# Add .harness/ to .gitignore if not already there
+if [[ -f .gitignore ]]; then
+  if ! grep -q '^\.harness/' .gitignore; then
+    # Ensure newline before appending (file may not end with one)
+    [[ -s .gitignore && "$(tail -c1 .gitignore)" != "" ]] && echo "" >> .gitignore
+    echo ".harness/" >> .gitignore
+    echo "  -> Added .harness/ to .gitignore"
+  else
+    echo "  -> .gitignore already has .harness/, skipping"
+  fi
+else
+  echo "  -> .gitignore template"
+  fetch_file "templates/repo-bootstrap/.gitignore" ".gitignore"
+fi
+
+
+# Download harness.json if it doesn't exist
+if [[ ! -f harness.json ]]; then
+  echo "  -> harness.json config (orchestration settings)"
+  fetch_file "templates/repo-bootstrap/harness.json" "harness.json"
+else
+  echo "  -> harness.json already exists, skipping"
+fi
+
+# Copy version hash for update tracking
+if [[ ! -f .harness-version ]]; then
+  echo "  -> .harness-version (update tracking)"
+  fetch_file ".harness-version" ".harness-version"
+else
+  echo "  -> .harness-version already exists, skipping"
+fi
+
+# Copy subagent permissions if not present
+if [[ ! -f .claude/settings.local.json ]]; then
+  echo "  -> .claude/settings.local.json (subagent permissions)"
+  mkdir -p .claude
+  if fetch_file "templates/repo-bootstrap/.claude/settings.local.json" ".claude/settings.local.json.tmp"; then
+    mv .claude/settings.local.json.tmp .claude/settings.local.json
+  else
+    rm -f .claude/settings.local.json.tmp
+    echo "     WARNING: Failed to download settings.local.json — subagent permissions not configured"
+  fi
+else
+  echo "  -> .claude/settings.local.json already exists, skipping"
+fi
+
+# Ensure settings.local.json is gitignored (even in existing repos)
+if [[ -f .gitignore ]]; then
+  if ! grep -q '\.claude/settings\.local\.json' .gitignore; then
+    [[ -s .gitignore && "$(tail -c1 .gitignore)" != "" ]] && echo "" >> .gitignore
+    echo ".claude/settings.local.json" >> .gitignore
+    echo "  -> Added .claude/settings.local.json to .gitignore"
+  fi
+fi
+
+# Copy team-wide settings.json (committed) if not present
+if [[ ! -f .claude/settings.json ]]; then
+  echo "  -> .claude/settings.json (team-wide hooks)"
+  mkdir -p .claude
+  if fetch_file "templates/repo-bootstrap/.claude/settings.json" ".claude/settings.json.tmp"; then
+    mv .claude/settings.json.tmp .claude/settings.json
+  else
+    rm -f .claude/settings.json.tmp
+    echo "     WARNING: Failed to download settings.json — team-wide hooks not configured"
+  fi
+else
+  echo "  -> .claude/settings.json already exists, skipping"
+fi
+
+# Fold the backbone hardened-allowlist into .claude/settings.json. Earned-and-
+# ratified autopilot rules propagate here at bootstrap. The merge ONLY adds rules
+# — it never removes or reorders operator rules. settings.json stays operator-
+# owned. Best-effort: a merge failure must WARN, not abort init.
+if [[ -f .claude/settings.json ]]; then
+  HARDENED_SRC=""
+  HARDENED_TMP=""
+  MERGE_HELPER=""
+  if [[ "$FETCH_MODE" == "local" ]]; then
+    HARDENED_SRC="$HARNESS_LOCAL/lib/autopilot/hardened-allowlist.json"
+    MERGE_HELPER="$HARNESS_LOCAL/lib/autopilot/merge_allowlist.py"
+  else
+    HARDENED_TMP="$(mktemp "${TMPDIR:-/tmp}/harness-hardened.XXXXXX")"
+    MERGE_HELPER="$(mktemp "${TMPDIR:-/tmp}/harness-merge.XXXXXX")"
+    if fetch_file "lib/autopilot/hardened-allowlist.json" "$HARDENED_TMP" 2>/dev/null \
+       && fetch_file "lib/autopilot/merge_allowlist.py" "$MERGE_HELPER" 2>/dev/null; then
+      HARDENED_SRC="$HARDENED_TMP"
+    else
+      HARDENED_SRC=""
+    fi
+  fi
+  if [[ -n "$HARDENED_SRC" && -f "$HARDENED_SRC" && -f "$MERGE_HELPER" ]]; then
+    if MERGE_OUT="$(python3 "$MERGE_HELPER" "$HARDENED_SRC" ".claude/settings.json" 2>/dev/null)"; then
+      [[ -n "$MERGE_OUT" ]] && echo "  -> hardened allowlist: $MERGE_OUT"
+    else
+      echo "     WARNING: hardened-allowlist merge skipped"
+    fi
+  fi
+  [[ -n "$HARDENED_TMP" ]] && rm -f "$HARDENED_TMP"
+  [[ "$FETCH_MODE" != "local" && -n "$MERGE_HELPER" ]] && rm -f "$MERGE_HELPER"
+fi
+
+# Copy orchestrate command
+ORCHESTRATE_OK=true
+mkdir -p .claude/skills
+
+# Migrate old command format to skill format (only if skill doesn't already exist)
+if [[ -f .claude/commands/harness-orchestrate.md && ! -f .claude/skills/harness-orchestrate.md ]]; then
+  # Prepend skill frontmatter to the old command file (skip if already has frontmatter)
+  python3 -c "
+import sys, os
+frontmatter = '''---
+name: harness-orchestrate
+description: Classify a plain-language request, route it through the HARNESS pipeline (debug/brainstorm/plan/execute/review), manage session lifecycle, and open a PR
+---
+
+'''
+with open(sys.argv[1]) as f:
+    content = f.read()
+# Skip prepending if file already starts with YAML frontmatter
+if not content.startswith('---'):
+    content = frontmatter + content
+# Write to temp file first, then atomic rename to prevent data loss
+tmp = sys.argv[2] + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(content)
+os.rename(tmp, sys.argv[2])
+" .claude/commands/harness-orchestrate.md .claude/skills/harness-orchestrate.md
+  rm .claude/commands/harness-orchestrate.md
+  echo "  -> Migrated harness-orchestrate from command to skill format"
+  # Remove commands dir if empty
+  rmdir .claude/commands 2>/dev/null || true
+fi
+
+if [[ ! -f .claude/skills/harness-orchestrate.md ]]; then
+  echo "  -> harness-orchestrate skill (.claude/skills/)"
+  if fetch_file "templates/repo-bootstrap/.claude/skills/harness-orchestrate.md" \
+    ".claude/skills/harness-orchestrate.md.tmp"; then
+    mv .claude/skills/harness-orchestrate.md.tmp .claude/skills/harness-orchestrate.md
+  else
+    rm -f .claude/skills/harness-orchestrate.md.tmp
+    echo "WARNING: Failed to download harness-orchestrate.md"
+    ORCHESTRATE_OK=false
+  fi
+else
+  echo "  -> harness-orchestrate skill already exists, skipping"
+fi
+
+# Copy HARNESS-owned chain skills (define-metric, trace-audit). These are
+# referenced by qualified name from contracts/chain-manifest.json and must
+# resolve in every consumer repo so the chain mechanism can dispatch them.
+for chain_skill in define-metric trace-audit; do
+  dst=".claude/skills/${chain_skill}.md"
+  if [[ ! -f "$dst" ]]; then
+    echo "  -> ${chain_skill} skill (.claude/skills/)"
+    if fetch_file "templates/repo-bootstrap/.claude/skills/${chain_skill}.md" \
+      "${dst}.tmp"; then
+      mv "${dst}.tmp" "$dst"
+    else
+      rm -f "${dst}.tmp"
+      echo "WARNING: Failed to download ${chain_skill}.md — chain may not run"
+    fi
+  else
+    echo "  -> ${chain_skill} skill already exists, skipping"
+  fi
+done
+
+# PR-review skill is no longer installed per-repo by harness-init.
+# Each developer installs it globally via: bash bin/harness-setup-dev
+# (from the HARNESS repo). See HARNESS/docs/MIGRATIONS/2026-04-20-pr-review-skill.md.
+
+# Copy lib files required by the orchestrate command
+mkdir -p lib
+for lib_file in session.sh classifier.md router.md; do
+  if [[ ! -f "lib/$lib_file" ]]; then
+    echo "  -> lib/$lib_file"
+    if fetch_file "lib/$lib_file" "lib/$lib_file.tmp"; then
+      mv "lib/$lib_file.tmp" "lib/$lib_file"
+    else
+      rm -f "lib/$lib_file.tmp"
+      echo "WARNING: Failed to download lib/$lib_file — /harness-orchestrate may not work correctly"
+    fi
+  else
+    echo "  -> lib/$lib_file already exists, skipping"
+  fi
+done
+
+# Copy bin/harness CLI
+HARNESS_CLI_OK=true
+mkdir -p bin
+if [[ ! -f bin/harness ]]; then
+  echo "  -> bin/harness CLI"
+  if fetch_file "bin/harness" "bin/harness.tmp"; then
+    mv bin/harness.tmp bin/harness
+    chmod +x bin/harness
+  else
+    rm -f bin/harness.tmp
+    echo "WARNING: Failed to download bin/harness — module commands will not work"
+    HARNESS_CLI_OK=false
+  fi
+else
+  echo "  -> bin/harness already exists, skipping"
+fi
+
+# Copy module system tooling (validation + hooks + permissions + config)
+for py_file in validate_module.py module_deps.py hook_registry.py hook_executor.py permission_checker.py config_resolver.py config_validator.py agent_registry.py cron_manager.py module_fetch.py adapter_registry.py inbox_manager.py module_scaffold.py simulator.py simulation_reporter.py full_validator.py orchestrator.py service_desk.py module_tools.py dashboard.py; do
+  if [[ ! -f "lib/$py_file" ]]; then
+    echo "  -> lib/$py_file"
+    if fetch_file "lib/$py_file" "lib/$py_file.tmp"; then
+      mv "lib/$py_file.tmp" "lib/$py_file"
+      # Invoked via python3, not directly — no chmod +x needed
+    else
+      rm -f "lib/$py_file.tmp"
+      warn_feature="module validation"
+      case "$py_file" in
+        hook_registry.py|hook_executor.py) warn_feature="hook commands" ;;
+        permission_checker.py)             warn_feature="permission commands" ;;
+        config_resolver.py|config_validator.py) warn_feature="config commands" ;;
+      esac
+      echo "WARNING: Failed to download lib/$py_file — $warn_feature may not work"
+      HARNESS_CLI_OK=false
+    fi
+  else
+    echo "  -> lib/$py_file already exists, skipping"
+  fi
+done
+
+# Copy scenario files
+echo "  -> scenarios/ (simulation test data)"
+mkdir -p scenarios
+if [[ "$FETCH_MODE" == "local" ]]; then
+  for scenario in "$HARNESS_LOCAL"/scenarios/*.json; do
+    [[ -f "$scenario" ]] && cp "$scenario" "scenarios/$(basename "$scenario")"
+  done
+else
+  for scenario in panel-upgrade service-call commercial-bid invoice-payment; do
+    curl -sfL "$HARNESS_REPO/scenarios/${scenario}.json" -o "scenarios/${scenario}.json" 2>/dev/null || true
+  done
+fi
+
+# Copy channel adapter scripts
+echo "  -> lib/adapters/ (channel adapters)"
+mkdir -p lib/adapters
+for adapter_file in __init__.py base.py imessage.py telegram.py; do
+  if [[ "$FETCH_MODE" == "local" ]]; then
+    src="$HARNESS_LOCAL/lib/adapters/$adapter_file"
+    if [[ -f "$src" ]]; then
+      cp "$src" "lib/adapters/$adapter_file"
+    else
+      echo "WARNING: Missing local adapter file: $src"
+    fi
+  else
+    if curl -sfL "$HARNESS_REPO/lib/adapters/$adapter_file" -o "lib/adapters/$adapter_file.tmp" 2>/dev/null; then
+      mv "lib/adapters/$adapter_file.tmp" "lib/adapters/$adapter_file"
+    else
+      rm -f "lib/adapters/$adapter_file.tmp"
+      echo "WARNING: Failed to fetch lib/adapters/$adapter_file"
+    fi
+  fi
+done
+
+# Copy customer classifier
+if [[ ! -f "lib/customer_classifier.md" ]]; then
+  echo "  -> lib/customer_classifier.md"
+  fetch_file "lib/customer_classifier.md" "lib/customer_classifier.md" 2>/dev/null || echo "     (skipped)"
+fi
+
+# Copy entity schemas (the common data model contract)
+echo "  -> schemas/entities/ (shared data model)"
+mkdir -p schemas/entities schemas/module-manifest schemas/vertical schemas/hook-event schemas/permission-rules schemas/deployment schemas/integration schemas/task-result schemas/message
+if [[ "$FETCH_MODE" == "local" ]]; then
+  for schema in "$HARNESS_LOCAL"/schemas/entities/*.schema.json; do
+    [[ -f "$schema" ]] && cp "$schema" "schemas/entities/$(basename "$schema")"
+  done
+  mh="$HARNESS_LOCAL/schemas/module-manifest/module.harness.schema.json"
+  if [[ -f "$mh" ]]; then
+    cp "$mh" "schemas/module-manifest/module.harness.schema.json"
+    echo "  -> schemas/module-manifest/ (module contract)"
+  fi
+  vs="$HARNESS_LOCAL/schemas/vertical/vertical.schema.json"
+  if [[ -f "$vs" ]]; then
+    cp "$vs" "schemas/vertical/vertical.schema.json"
+    echo "  -> schemas/vertical/ (vertical template contract)"
+  fi
+  he="$HARNESS_LOCAL/schemas/hook-event/hook-event.schema.json"
+  if [[ -f "$he" ]]; then
+    cp "$he" "schemas/hook-event/hook-event.schema.json"
+    echo "  -> schemas/hook-event/ (hook event contract)"
+  fi
+  pr="$HARNESS_LOCAL/schemas/permission-rules/permission-rules.schema.json"
+  if [[ -f "$pr" ]]; then
+    cp "$pr" "schemas/permission-rules/permission-rules.schema.json"
+    echo "  -> schemas/permission-rules/ (permission rules contract)"
+  fi
+  dp="$HARNESS_LOCAL/schemas/deployment/deployment.schema.json"
+  if [[ -f "$dp" ]]; then
+    cp "$dp" "schemas/deployment/deployment.schema.json"
+    echo "  -> schemas/deployment/ (deployment contract)"
+  fi
+  ig="$HARNESS_LOCAL/schemas/integration/integration.schema.json"
+  if [[ -f "$ig" ]]; then
+    cp "$ig" "schemas/integration/integration.schema.json"
+    echo "  -> schemas/integration/ (integration contract)"
+  fi
+  tr="$HARNESS_LOCAL/schemas/task-result/task-result.schema.json"
+  if [[ -f "$tr" ]]; then
+    cp "$tr" "schemas/task-result/task-result.schema.json"
+    echo "  -> schemas/task-result/ (task result contract)"
+  fi
+  ms="$HARNESS_LOCAL/schemas/message/message.schema.json"
+  if [[ -f "$ms" ]]; then
+    cp "$ms" "schemas/message/message.schema.json"
+    echo "  -> schemas/message/ (message contract)"
+  fi
+else
+  for entity in "${HARNESS_ENTITIES[@]}"; do
+    if curl -sfL "$HARNESS_REPO/schemas/entities/${entity}.schema.json" \
+      -o "schemas/entities/${entity}.schema.json.tmp"; then
+      mv "schemas/entities/${entity}.schema.json.tmp" "schemas/entities/${entity}.schema.json"
+    else
+      rm -f "schemas/entities/${entity}.schema.json.tmp"
+      echo "WARNING: Failed to fetch ${entity} schema"
+    fi
+  done
+  if curl -sfL "$HARNESS_REPO/schemas/module-manifest/module.harness.schema.json" \
+    -o "schemas/module-manifest/module.harness.schema.json.tmp"; then
+    mv "schemas/module-manifest/module.harness.schema.json.tmp" "schemas/module-manifest/module.harness.schema.json"
+    echo "  -> schemas/module-manifest/ (module contract)"
+  else
+    rm -f "schemas/module-manifest/module.harness.schema.json.tmp"
+    echo "WARNING: Failed to fetch module manifest schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/vertical/vertical.schema.json" \
+    -o "schemas/vertical/vertical.schema.json.tmp"; then
+    mv "schemas/vertical/vertical.schema.json.tmp" "schemas/vertical/vertical.schema.json"
+    echo "  -> schemas/vertical/ (vertical template contract)"
+  else
+    rm -f "schemas/vertical/vertical.schema.json.tmp"
+    echo "WARNING: Failed to fetch vertical schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/hook-event/hook-event.schema.json" \
+    -o "schemas/hook-event/hook-event.schema.json.tmp"; then
+    mv "schemas/hook-event/hook-event.schema.json.tmp" "schemas/hook-event/hook-event.schema.json"
+    echo "  -> schemas/hook-event/ (hook event contract)"
+  else
+    rm -f "schemas/hook-event/hook-event.schema.json.tmp"
+    echo "WARNING: Failed to fetch hook event schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/permission-rules/permission-rules.schema.json" \
+    -o "schemas/permission-rules/permission-rules.schema.json.tmp"; then
+    mv "schemas/permission-rules/permission-rules.schema.json.tmp" "schemas/permission-rules/permission-rules.schema.json"
+    echo "  -> schemas/permission-rules/ (permission rules contract)"
+  else
+    rm -f "schemas/permission-rules/permission-rules.schema.json.tmp"
+    echo "WARNING: Failed to fetch permission rules schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/deployment/deployment.schema.json" \
+    -o "schemas/deployment/deployment.schema.json.tmp"; then
+    mv "schemas/deployment/deployment.schema.json.tmp" "schemas/deployment/deployment.schema.json"
+    echo "  -> schemas/deployment/ (deployment contract)"
+  else
+    rm -f "schemas/deployment/deployment.schema.json.tmp"
+    echo "WARNING: Failed to fetch deployment schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/integration/integration.schema.json" \
+    -o "schemas/integration/integration.schema.json.tmp"; then
+    mv "schemas/integration/integration.schema.json.tmp" "schemas/integration/integration.schema.json"
+    echo "  -> schemas/integration/ (integration contract)"
+  else
+    rm -f "schemas/integration/integration.schema.json.tmp"
+    echo "WARNING: Failed to fetch integration schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/task-result/task-result.schema.json" \
+    -o "schemas/task-result/task-result.schema.json.tmp"; then
+    mv "schemas/task-result/task-result.schema.json.tmp" "schemas/task-result/task-result.schema.json"
+    echo "  -> schemas/task-result/ (task result contract)"
+  else
+    rm -f "schemas/task-result/task-result.schema.json.tmp"
+    echo "WARNING: Failed to fetch task result schema"
+  fi
+  if curl -sfL "$HARNESS_REPO/schemas/message/message.schema.json" \
+    -o "schemas/message/message.schema.json.tmp"; then
+    mv "schemas/message/message.schema.json.tmp" "schemas/message/message.schema.json"
+    echo "  -> schemas/message/ (message contract)"
+  else
+    rm -f "schemas/message/message.schema.json.tmp"
+    echo "WARNING: Failed to fetch message schema"
+  fi
+fi
+
+# Copy vertical templates
+echo "  -> verticals/ (vertical templates)"
+mkdir -p verticals
+if [[ "$FETCH_MODE" == "local" ]]; then
+  for vfile in "$HARNESS_LOCAL"/verticals/*.json; do
+    [[ -f "$vfile" ]] && cp "$vfile" "verticals/$(basename "$vfile")"
+  done
+else
+  # Fetch known verticals (add new ones here as they're created)
+  if curl -sfL "$HARNESS_REPO/verticals/electrical.json" -o "verticals/electrical.json.tmp"; then
+    mv "verticals/electrical.json.tmp" "verticals/electrical.json"
+  else
+    rm -f "verticals/electrical.json.tmp"
+    echo "WARNING: Failed to fetch electrical.json vertical template"
+  fi
+fi
+
+# Install required plugins (Superpowers + ECC are table stakes)
+SUPERPOWERS_OK=true
+ECC_OK=true
+if command -v claude &>/dev/null; then
+  echo "  -> Checking Superpowers plugin..."
+  if ! claude plugin list 2>/dev/null | grep -qw "superpowers"; then
+    echo "     Installing Superpowers..."
+    claude plugin install superpowers || {
+      echo "WARNING: Failed to install Superpowers plugin."
+      SUPERPOWERS_OK=false
+    }
+  else
+    echo "     Superpowers already installed"
+  fi
+
+  echo "  -> Checking ECC (Everything Claude Code) plugin..."
+  if ! claude plugin list 2>/dev/null | grep -qw "ecc"; then
+    echo "     Installing ECC..."
+    claude plugin install ecc@everything-claude-code || {
+      echo "WARNING: Failed to install ECC plugin."
+      ECC_OK=false
+    }
+  else
+    echo "     ECC already installed"
+  fi
+else
+  echo ""
+  echo "WARNING: Claude CLI not found — cannot install required plugins."
+  SUPERPOWERS_OK=false
+  ECC_OK=false
+fi
+
+echo ""
+echo "Done. Next steps:"
+echo "  1. Add ANTHROPIC_API_KEY to repo secrets (Settings -> Secrets -> Actions)"
+echo "  2. Add PAT_TOKEN to repo secrets — use a fine-grained PAT scoped to THIS repo only"
+echo "     with Contents: Read/Write and Pull Requests: Read/Write permissions."
+echo "     (Required for auto-fix pushes to trigger pipeline re-verification.)"
+echo "  3. Install the Claude GitHub app: https://github.com/apps/claude"
+echo "  4. Edit CLAUDE.md — uncomment your module type and add project-specific standards"
+echo "  5. Edit REVIEW.md — customize what Claude flags during code review"
+echo "  6. Edit .github/workflows/maintenance.yml — set test_command to match your"
+echo "     project's test runner (e.g. 'npm test', 'pytest', 'go test ./...')"
+echo "  7. Run /harness-orchestrate with any plain language task to test the orchestration skill"
+echo ""
+echo "Your repo now has:"
+echo "  - Self-healing PR pipeline (security + code review + one-shot auto-fix)"
+echo "  - @claude mentions in issues and PRs (fix recommended, fix #N, dismiss #N)"
+echo "  - Daily maintenance checks"
+if [[ "$ORCHESTRATE_OK" == "true" ]]; then
+  echo "  - Orchestration skill (/harness-orchestrate for plain language tasks)"
+else
+  echo "  - Orchestration skill (FAILED — re-run harness-init to retry download)"
+fi
+if [[ "$HARNESS_CLI_OK" == "true" ]]; then
+  echo "  - Module system (validate, deps, scaffold, list via bin/harness)"
+else
+  echo "  - Module system (FAILED — re-run harness-init to retry download)"
+fi
+echo "  - Per-repo session tracking (.harness/sessions/)"
+if [[ "$SUPERPOWERS_OK" == "true" ]]; then
+  echo "  - Superpowers workflow skills (brainstorming, planning, execution, debugging)"
+fi
+if [[ "$ECC_OK" == "true" ]]; then
+  echo "  - ECC specialist skills (language reviewers, TDD, docs lookup, security)"
+fi
+if [[ "$SUPERPOWERS_OK" != "true" || "$ECC_OK" != "true" ]]; then
+  echo ""
+  echo "IMPORTANT: Required plugins were not installed. The orchestrator needs them."
+  echo "Run these commands to complete setup:"
+  [[ "$SUPERPOWERS_OK" != "true" ]] && echo "  claude plugin install superpowers"
+  [[ "$ECC_OK" != "true" ]] && echo "  claude plugin install ecc@everything-claude-code"
+fi
