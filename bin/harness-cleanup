@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# HARNESS — Stale branch cleanup
+# Finds merged harness/* branches older than HARNESS_CLEANUP_DAYS (default: 30)
+# and optionally deletes them.
+#
+# Usage:
+#   harness-cleanup              # dry-run: show what would be deleted
+#   harness-cleanup --force      # delete local + remote branches
+#   harness-cleanup --local-only # dry-run, local only
+#   harness-cleanup --force --local-only  # delete local only, skip remote
+#   harness-cleanup --help
+
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Flags
+# ---------------------------------------------------------------------------
+FORCE=false
+LOCAL_ONLY=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --force)      FORCE=true ;;
+    --local-only) LOCAL_ONLY=true ;;
+    --help|-h)
+      cat <<EOF
+HARNESS — Stale branch cleanup
+
+Finds merged harness/* branches older than a threshold and deletes them.
+
+Usage:
+  harness-cleanup [--force] [--local-only]
+  harness-cleanup --help
+
+Options:
+  --force       Actually delete branches (default is dry-run)
+  --local-only  Only process/delete local branches; skip remote refs
+  --help / -h   Show this message
+
+Environment:
+  HARNESS_CLEANUP_DAYS  Age threshold in days (default: 30)
+
+Always protected: main, dev, and the currently checked-out branch.
+Legacy recursive branches (harness/fix/harness/fix/*) are always
+eligible regardless of age.
+EOF
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $arg" >&2
+      echo "Run harness-cleanup --help for usage." >&2
+      exit 1
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+CLEANUP_DAYS="${HARNESS_CLEANUP_DAYS:-30}"
+
+if ! [[ "$CLEANUP_DAYS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: HARNESS_CLEANUP_DAYS must be a positive integer, got: $CLEANUP_DAYS" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve default branch
+# ---------------------------------------------------------------------------
+DEFAULT_BRANCH=""
+if DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null); then
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#refs/remotes/origin/}"
+fi
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  if git show-ref --verify --quiet refs/heads/dev 2>/dev/null; then
+    DEFAULT_BRANCH="dev"
+  elif git show-ref --verify --quiet refs/heads/main 2>/dev/null; then
+    DEFAULT_BRANCH="main"
+  else
+    echo "ERROR: Could not detect default branch. Set origin/HEAD or ensure dev/main exists." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Current branch (always protected)
+# ---------------------------------------------------------------------------
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "HEAD")
+
+# ---------------------------------------------------------------------------
+# Mode label
+# ---------------------------------------------------------------------------
+if $FORCE; then
+  if $LOCAL_ONLY; then
+    MODE_LABEL="force (local only)"
+  else
+    MODE_LABEL="force"
+  fi
+else
+  if $LOCAL_ONLY; then
+    MODE_LABEL="dry-run (local only)"
+  else
+    MODE_LABEL="dry-run"
+  fi
+fi
+
+echo "HARNESS — Stale branch cleanup"
+echo "  Default branch: $DEFAULT_BRANCH"
+echo "  Age threshold: $CLEANUP_DAYS days"
+echo "  Mode: $MODE_LABEL"
+echo ""
+
+# ---------------------------------------------------------------------------
+# Cutoff epoch (python3 for cross-platform consistency)
+# ---------------------------------------------------------------------------
+CUTOFF_EPOCH=$(python3 -c "import sys,time; print(int(time.time())-int(sys.argv[1])*86400)" "$CLEANUP_DAYS")
+
+# ---------------------------------------------------------------------------
+# Protected set
+# ---------------------------------------------------------------------------
+PROTECTED=("main" "dev" "$CURRENT_BRANCH" "$DEFAULT_BRANCH")
+echo "  Protected: ${PROTECTED[*]}"
+echo ""
+
+is_protected() {
+  local branch="$1"
+  local p
+  for p in "${PROTECTED[@]}"; do
+    [[ "$branch" == "$p" ]] && return 0
+  done
+  return 1
+}
+
+is_legacy_recursive() {
+  local branch="$1"
+  [[ "$branch" == harness/fix/harness/fix/* ]] && return 0
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Fetch to get up-to-date remote state (best-effort, non-fatal)
+# ---------------------------------------------------------------------------
+git fetch --prune origin 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# Pre-fetch PR state for squash-merge detection
+# ---------------------------------------------------------------------------
+# `git merge-base --is-ancestor` does NOT detect squash-merged branches —
+# squash creates a brand-new commit on the default branch whose history does
+# not contain the feature branch's tip. HARNESS uses squash-merge by default,
+# so without this cross-check the tool is a no-op against real workflows.
+#
+# We make a single `gh pr list` call up-front and cache PR state in a temp
+# file, then look up each branch's PR state via awk during the loop.
+PR_STATE_FILE="$(mktemp -t harness-cleanup-pr-state.XXXXXX)"
+trap 'rm -f "$PR_STATE_FILE"' EXIT INT TERM
+
+if command -v gh >/dev/null 2>&1; then
+  if gh pr list --state all --limit 500 \
+      --json number,state,headRefName \
+      --jq '.[] | "\(.headRefName)\t\(.state)"' \
+      > "$PR_STATE_FILE" 2>/dev/null; then
+    PR_COUNT=$(wc -l < "$PR_STATE_FILE" | tr -d ' ')
+    echo "  PR cache: $PR_COUNT PRs (squash-merge detection enabled)"
+  else
+    echo "  PR cache: gh pr list failed; squash-merge detection DISABLED" >&2
+    : > "$PR_STATE_FILE"
+  fi
+else
+  echo "  PR cache: gh CLI not available; squash-merge detection DISABLED" >&2
+  : > "$PR_STATE_FILE"
+fi
+
+# Returns 0 if the branch's PR state is MERGED in the cached gh output.
+# Used to catch squash-merged branches that fail merge-base --is-ancestor.
+is_merged_via_squash() {
+  local branch="$1"
+  [[ -s "$PR_STATE_FILE" ]] || return 1
+  local state
+  state=$(awk -F'\t' -v b="$branch" '$1==b{print $2; exit}' "$PR_STATE_FILE")
+  [[ "$state" == "MERGED" ]]
+}
+
+# ---------------------------------------------------------------------------
+# Collect candidate branches
+# ---------------------------------------------------------------------------
+# We'll build a list of: <branch_name> <is_remote_only>
+# Local branches first, then remote-only refs (origin/harness/* that have
+# no corresponding local branch).
+
+declare -a CANDIDATES=()   # "branchname:remote_only" pairs
+
+# Local harness/* branches
+while IFS= read -r branch; do
+  branch="${branch#  }"    # strip leading spaces
+  branch="${branch#* }"    # strip leading "* " for current branch indicator
+  branch="${branch#refs/heads/}"
+  [[ "$branch" == harness/* ]] || continue
+  CANDIDATES+=("${branch}:local")
+done < <(git branch --format='%(refname:short)' 2>/dev/null | grep '^harness/' || true)
+
+# Remote-only harness/* branches (origin refs with no local counterpart)
+if ! $LOCAL_ONLY; then
+  while IFS= read -r remote_ref; do
+    remote_ref="${remote_ref#  }"
+    remote_ref="${remote_ref#* }"
+    # remote_ref looks like "origin/harness/foo"
+    branch="${remote_ref#origin/}"
+    [[ "$branch" == harness/* ]] || continue
+    # Check if already in CANDIDATES as local
+    already_local=false
+    for entry in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
+      [[ "${entry%%:*}" == "$branch" ]] && already_local=true && break
+    done
+    $already_local && continue
+    CANDIDATES+=("${branch}:remote_only")
+  done < <(git branch -r --format='%(refname:short)' 2>/dev/null | grep '^origin/harness/' || true)
+fi
+
+# ---------------------------------------------------------------------------
+# Evaluate each candidate
+# ---------------------------------------------------------------------------
+DELETE_COUNT=0
+
+for entry in "${CANDIDATES[@]+"${CANDIDATES[@]}"}"; do
+  branch="${entry%%:*}"
+  origin="${entry##*:}"   # "local" or "remote_only"
+
+  # Protected?
+  if is_protected "$branch"; then
+    echo "  Skipping: $branch (protected)"
+    continue
+  fi
+
+  # Resolve which ref to use for merge-base check
+  local_ref="refs/heads/$branch"
+  remote_ref="refs/remotes/origin/$branch"
+  branch_ref=""
+  if git show-ref --verify --quiet "$local_ref" 2>/dev/null; then
+    branch_ref="$local_ref"
+  elif git show-ref --verify --quiet "$remote_ref" 2>/dev/null; then
+    branch_ref="$remote_ref"
+  else
+    echo "  Skipping: $branch (ref not found)"
+    continue
+  fi
+
+  # All branches (including legacy recursive) must be merged before deletion.
+  # First try cheap merge-base check (catches merge-commit + rebase-merge).
+  # If that fails, fall through to squash-merge detection via cached PR state.
+  merged_via_squash=false
+  if ! git merge-base --is-ancestor "$branch_ref" "$DEFAULT_BRANCH" 2>/dev/null; then
+    if is_merged_via_squash "$branch"; then
+      merged_via_squash=true
+    else
+      echo "  Skipping: $branch (not merged)"
+      continue
+    fi
+  fi
+
+  # Suffix label with detection method when squash was the discriminator.
+  merge_kind=$($merged_via_squash && echo "squash-merged" || echo "merged")
+
+  # Legacy recursive branch — eligible regardless of age (but still must be merged)
+  if is_legacy_recursive "$branch"; then
+    label="legacy recursive, $merge_kind"
+    eligible=true
+  else
+    # Age check (merge already verified above)
+    commit_epoch=$(git log -1 --format='%ct' "$branch_ref" 2>/dev/null || true)
+    if [[ -z "$commit_epoch" || "$commit_epoch" == "0" ]]; then
+      echo "  Skipping: $branch (could not read commit date)"
+      continue
+    fi
+    age_days=$(python3 -c "import sys,time; print(int((time.time()-int(sys.argv[1]))/86400))" "$commit_epoch")
+
+    if (( commit_epoch > CUTOFF_EPOCH )); then
+      echo "  Skipping: $branch ($merge_kind, only ${age_days} day(s) old — under threshold)"
+      continue
+    fi
+
+    label="$merge_kind, ${age_days} days old"
+    eligible=true
+  fi
+
+  # Eligible for deletion
+  DELETE_COUNT=$((DELETE_COUNT + 1))
+
+  if $FORCE; then
+    echo "  Deleting: $branch ($label)"
+    # Delete local branch if it exists
+    if git show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+      git branch -D "$branch" && echo "    Deleted local: $branch" || echo "    WARNING: failed to delete local $branch"
+    fi
+    # Delete remote branch unless --local-only
+    if ! $LOCAL_ONLY; then
+      if git show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null; then
+        git push origin --delete "$branch" && echo "    Deleted remote: origin/$branch" || echo "    WARNING: failed to delete remote $branch"
+      fi
+    fi
+  else
+    echo "  [dry-run] Would delete: $branch ($label)"
+  fi
+done
+
+echo ""
+if $FORCE; then
+  echo "  $DELETE_COUNT branch(es) deleted."
+else
+  if (( DELETE_COUNT > 0 )); then
+    echo "  $DELETE_COUNT branch(es) would be deleted. Run with --force to delete."
+  else
+    echo "  No stale branches found."
+  fi
+fi

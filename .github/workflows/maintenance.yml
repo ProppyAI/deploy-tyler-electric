@@ -3,9 +3,9 @@
 
 name: "Daily Maintenance"
 
+# Scheduled trigger removed 2026-06-03 — the per-repo daily maintenance loop
+# is retired pending the dynamic client-standup redesign. Manual dispatch only.
 on:
-  schedule:
-    - cron: '0 6 * * *'  # 6am UTC daily
   workflow_dispatch:       # Manual trigger
 
 jobs:

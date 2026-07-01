@@ -167,36 +167,36 @@ These specialist skills are available via Everything Claude Code. Use them
 at your discretion during execution — pick what fits the repo and task.
 
 ### Code Quality (use during executing/reviewing stages)
-- `/everything-claude-code:python-review` — Python repos
-- `/everything-claude-code:typescript-review` — TypeScript/JavaScript repos
-- `/everything-claude-code:rust-review` — Rust repos
-- `/everything-claude-code:go-review` — Go repos
-- `/everything-claude-code:java-review` — Java/Spring Boot repos
-- `/everything-claude-code:kotlin-review` — Kotlin/Android repos
-- `/everything-claude-code:cpp-review` — C++ repos
-- `/everything-claude-code:flutter-reviewer` — Flutter/Dart repos
+- `/ecc:python-review` — Python repos
+- `/ecc:typescript-review` — TypeScript/JavaScript repos
+- `/ecc:rust-review` — Rust repos
+- `/ecc:go-review` — Go repos
+- `/ecc:java-review` — Java/Spring Boot repos
+- `/ecc:kotlin-review` — Kotlin/Android repos
+- `/ecc:cpp-review` — C++ repos
+- `/ecc:flutter-reviewer` — Flutter/Dart repos
 
 ### Testing (use during executing stage)
-- `/everything-claude-code:tdd` — enforce test-driven development
-- `/everything-claude-code:python-testing` — Python test patterns (pytest)
-- `/everything-claude-code:rust-test` — Rust test patterns
-- `/everything-claude-code:go-test` — Go table-driven tests
-- `/everything-claude-code:kotlin-test` — Kotlin Kotest patterns
-- `/everything-claude-code:e2e` — Playwright end-to-end tests
+- `/ecc:tdd` — enforce test-driven development
+- `/ecc:python-testing` — Python test patterns (pytest)
+- `/ecc:rust-test` — Rust test patterns
+- `/ecc:go-test` — Go table-driven tests
+- `/ecc:kotlin-test` — Kotlin Kotest patterns
+- `/ecc:e2e` — Playwright end-to-end tests
 
 ### Research (use before writing code)
-- `/everything-claude-code:docs` — look up library docs via Context7
-- `/everything-claude-code:search-first` — check for existing solutions
+- `/ecc:docs` — look up library docs via Context7
+- `/ecc:search-first` — check for existing solutions
 
 ### Security (use when touching auth, user input, APIs, secrets)
-- `/everything-claude-code:security-review` — OWASP Top 10 + secrets scan
-- `/everything-claude-code:security-scan` — scan Claude Code config for vulnerabilities
+- `/ecc:security-review` — OWASP Top 10 + secrets scan
+- `/ecc:security-scan` — scan Claude Code config for vulnerabilities
 
 ### Build Errors (use when builds fail during execution)
-- `/everything-claude-code:rust-build` — Rust build/borrow checker issues
-- `/everything-claude-code:go-build` — Go build/vet issues
-- `/everything-claude-code:cpp-build` — C++/CMake issues
-- `/everything-claude-code:kotlin-build` — Kotlin/Gradle issues
+- `/ecc:rust-build` — Rust build/borrow checker issues
+- `/ecc:go-build` — Go build/vet issues
+- `/ecc:cpp-build` — C++/CMake issues
+- `/ecc:kotlin-build` — Kotlin/Gradle issues
 
 ## Error Handling
 

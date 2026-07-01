@@ -1,7 +1,7 @@
 name: Module Cron Jobs
+# Scheduled trigger removed 2026-06-03 — the per-module cron loop is retired
+# pending the dynamic client-standup redesign. Manual dispatch only for now.
 on:
-  schedule:
-    - cron: '0 * * * *'   # Hourly — due jobs are filtered by cron_manager
   workflow_dispatch:
     inputs:
       job_name:

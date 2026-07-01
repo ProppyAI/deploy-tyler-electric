@@ -35,22 +35,19 @@ Use your judgment — not every task needs the full cycle. Simple tasks should b
 
 Language-specific and domain-specific skills are available for deeper analysis:
 
-- **Code review**: Use the language-specific reviewer for this repo (e.g., `/everything-claude-code:python-review`, `/everything-claude-code:typescript-review`, `/everything-claude-code:rust-review`)
-- **Testing**: Use `/everything-claude-code:tdd` for test-driven development, or language-specific test skills
-- **Research**: Use `/everything-claude-code:docs` to look up library documentation before guessing, `/everything-claude-code:search-first` to check for existing solutions
-- **Security**: Use `/everything-claude-code:security-review` when touching authentication, user input, API endpoints, or secrets
-- **Build errors**: Use the language-specific build resolver (e.g., `/everything-claude-code:rust-build`, `/everything-claude-code:go-build`)
+- **Code review**: Use the language-specific reviewer for this repo (e.g., `/ecc:python-review`, `/ecc:typescript-review`, `/ecc:rust-review`)
+- **Testing**: Use `/ecc:tdd` for test-driven development, or language-specific test skills
+- **Research**: Use `/ecc:docs` to look up library documentation before guessing, `/ecc:search-first` to check for existing solutions
+- **Security**: Use `/ecc:security-review` when touching authentication, user input, API endpoints, or secrets
+- **Build errors**: Use the language-specific build resolver (e.g., `/ecc:rust-build`, `/ecc:go-build`)
 
 These complement the Superpowers workflow — use them within any workflow stage where they add value.
 
 ## HARNESS Skills
 
-- `/fix-pr-reviews <PR#>` — Autonomous PR review fix loop
-  - Reads bot PR reviews, classifies findings as REAL (actual bugs) vs NOISE (theoretical/cosmetic)
-  - Fixes REAL findings only, preserving original PR intent
-  - Pushes, polls for bot re-review, keeps turning until nothing addressable remains
-  - Writes to mempalace KG after each round — system learns noise patterns over time
-  - Options: `--repo owner/repo` (default current)
+- `/pr-review <PR#>` — local PR review+fix loop with up to 5 parallel reviewers (code quality, spec compliance, ProppyAI security always; `codex-cross-model` and `gstack-security-mirror` when gstack is installed on the developer machine), MemPalace noise memory, wait-for-all-reviewers aggregation, and auto-merge on convergence. Dispatched automatically by the global git pre-push hook on every push with an open PR.
+
+Note: this skill and the pre-push hook are installed per-developer via `bin/harness-setup-dev`, not bootstrapped into the repo itself.
 
 ## Backbone Updates
 

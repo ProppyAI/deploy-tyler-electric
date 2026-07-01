@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# harness-migrate-tenant — one-shot cleanup after the 2026-04-20 PR-review migration
+#
+# Removes dead backbone files from a tenant repo:
+#   - .github/workflows/pr.yml           (CI review pipeline was decommissioned)
+#   - .claude/skills/fix-pr-reviews.md   (replaced by global /pr-review command)
+#
+# Run from the root of any tenant repo. Idempotent — safe to re-run.
+#
+# Usage:
+#   bash /path/to/HARNESS/bin/harness-migrate-tenant          # dry-run by default
+#   bash /path/to/HARNESS/bin/harness-migrate-tenant --apply  # actually delete + commit
+#   bash /path/to/HARNESS/bin/harness-migrate-tenant --apply --pr  # + open PR to dev
+
+set -euo pipefail
+
+APPLY=0
+OPEN_PR=0
+for arg in "$@"; do
+  case "$arg" in
+    --apply) APPLY=1 ;;
+    --pr)    OPEN_PR=1 ;;
+    -h|--help)
+      sed -n '2,15p' "$0"; exit 0 ;;
+    *) echo "ERROR: unknown flag: $arg"; exit 1 ;;
+  esac
+done
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$REPO_ROOT"
+
+TARGETS=(
+  ".github/workflows/pr.yml"
+  ".claude/skills/fix-pr-reviews.md"
+)
+
+PRESENT=()
+for f in "${TARGETS[@]}"; do
+  [[ -e "$f" ]] && PRESENT+=("$f")
+done
+
+if [[ ${#PRESENT[@]} -eq 0 ]]; then
+  echo "Nothing to migrate — repo is already clean."
+  exit 0
+fi
+
+echo "Files to remove in $REPO_ROOT:"
+for f in "${PRESENT[@]}"; do echo "  - $f"; done
+
+if (( ! APPLY )); then
+  echo ""
+  echo "Dry-run only. Re-run with --apply to delete + commit."
+  exit 0
+fi
+
+BRANCH="harness/migrate/2026-04-20-pr-review"
+if git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+  echo "Reusing existing migration branch: $BRANCH"
+  git checkout "$BRANCH"
+else
+  echo "Creating migration branch: $BRANCH"
+  git checkout -b "$BRANCH"
+fi
+
+for f in "${PRESENT[@]}"; do
+  git rm "$f"
+done
+
+git commit -m "chore: migrate off decommissioned HARNESS PR-review backbone
+
+Removes files that no longer resolve after the 2026-04-20 HARNESS
+migration to the local /pr-review skill:
+  - .github/workflows/pr.yml           (pr-pipeline workflow deleted)
+  - .claude/skills/fix-pr-reviews.md   (replaced by /pr-review global command)
+
+Each developer on this repo needs bin/harness-setup-dev from HARNESS
+run once on their machine to install /pr-review locally.
+
+See HARNESS/docs/MIGRATIONS/2026-04-20-pr-review-skill.md for full rollout."
+
+if (( OPEN_PR )); then
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "WARN: gh CLI not installed — skipping PR creation. Push manually and open PR."
+    exit 0
+  fi
+  git push -u origin "$BRANCH"
+  gh pr create --base dev --title "chore: migrate off decommissioned HARNESS PR-review backbone" --body "$(cat <<'EOF'
+## Summary
+
+Removes two dead files left over from the 2026-04-20 HARNESS migration:
+- \`.github/workflows/pr.yml\` — the reusable CI review pipeline it called (`pr-pipeline.yml`) was deleted from HARNESS.
+- \`.claude/skills/fix-pr-reviews.md\` — replaced by the global \`/pr-review\` command managed by HARNESS.
+
+## Why
+
+HARNESS backbone dropped CI-based PR review in favor of a fully-local loop (zero GitHub Actions minutes, convergence-based exits, built-in security reviewer). See \`HARNESS/docs/MIGRATIONS/2026-04-20-pr-review-skill.md\`.
+
+## Test plan
+
+- [ ] Every developer on this repo has run \`bash HARNESS/bin/harness-setup-dev\` once
+- [ ] \`/pr-review <this-PR>\` from any developer machine converges and auto-merges (or prints merge command depending on autoloop config)
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+  echo "PR opened against dev."
+fi
